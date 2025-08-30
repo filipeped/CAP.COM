@@ -45,11 +45,17 @@ function isDuplicateEvent(eventId: string): boolean {
 
   // Controle de tamanho do cache
   if (eventCache.size >= MAX_CACHE_SIZE) {
-    const oldest = eventCache.keys().next();
-    if (!oldest.done) {
-      eventCache.delete(oldest.value);
-      console.log("🗑️ Cache cheio: evento mais antigo removido");
+    // Remove 10% do cache quando atingir o limite para melhor performance
+    const itemsToRemove = Math.floor(MAX_CACHE_SIZE * 0.1);
+    let removedCount = 0;
+    
+    for (const [eventId] of eventCache) {
+      if (removedCount >= itemsToRemove) break;
+      eventCache.delete(eventId);
+      removedCount++;
     }
+    
+    console.log(`🗑️ Cache overflow: ${removedCount} eventos mais antigos removidos (${eventCache.size}/${MAX_CACHE_SIZE})`);
   }
 
   // Adicionar ao cache
@@ -97,14 +103,28 @@ function getClientIP(
 
   function isValidIPv6(ip: string): boolean {
     const cleanIP = ip.replace(/^\[|\]$/g, "");
-    const ipv6Regex =
-      /^(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$/;
-    return ipv6Regex.test(cleanIP);
+    // ✅ REGEX IPv6 OTIMIZADA: Mais eficiente e simples
+    try {
+      // Validação básica de formato IPv6
+      if (!/^[0-9a-fA-F:]+$/.test(cleanIP.replace(/\./g, ''))) return false;
+      
+      // Usar URL constructor para validação nativa (mais eficiente)
+      new URL(`http://[${cleanIP}]`);
+      return true;
+    } catch {
+      // Fallback para regex simplificada
+      const ipv6Simple = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$|^::1$|^::$/;
+      return ipv6Simple.test(cleanIP);
+    }
   }
 
   function isPrivateIP(ip: string): boolean {
     if (isValidIPv4(ip)) {
       const parts = ip.split(".").map(Number);
+      // Validar se todas as partes são números válidos
+      if (parts.some(part => isNaN(part) || part < 0 || part > 255)) {
+        return false;
+      }
       return (
         parts[0] === 10 ||
         (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
@@ -132,9 +152,10 @@ function getClientIP(
     else if (isValidIPv4(ip) && !isPrivateIP(ip)) validIPv4.push(ip);
   });
 
+  // ✅ PRIORIDADE IPv6: Garantir que a Meta reconheça corretamente o IPv6
   if (validIPv6.length > 0) {
     const selectedIP = validIPv6[0];
-    console.log("🌐 IPv6 detectado (prioridade):", selectedIP);
+    console.log("🌐 IPv6 detectado (prioridade para Meta CAPI):", selectedIP);
     return { ip: selectedIP, type: "IPv6" };
   }
   if (validIPv4.length > 0) {
@@ -246,18 +267,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // 🛡️ FILTRO DE DEDUPLICAÇÃO MELHORADO: Verificar duplicatas antes do processamento
     const originalCount = req.body.data.length;
-    const filteredData = (req.body.data as any[]).filter((event: any) => {
-      // Usar event_id do frontend ou gerar baseado em dados consistentes
-      let eventId = event.event_id;
-      if (!eventId) {
+    // Primeiro passo: gerar event_id para todos os eventos que não têm
+    const eventsWithIds = req.body.data.map((event: any) => {
+      if (!event.event_id) {
         const eventName = event.event_name || "Lead";
-        const eventTime = event.event_time ? Math.floor(Number(event.event_time)) : Math.floor(Date.now() / 1000);
+        const eventTime = event.event_time && !isNaN(Number(event.event_time)) ? Math.floor(Number(event.event_time)) : Math.floor(Date.now() / 1000);
         const externalId = event.user_data?.external_id || "no_ext_id";
         const eventSourceUrl = event.event_source_url || origin || (req.headers.referer as string) || "https://www.digitalpaisagismo.com";
         const eventData = `${eventName}_${eventTime}_${externalId}_${eventSourceUrl}`;
-        eventId = `evt_${hashSHA256(eventData)?.substring(0, 16) || Date.now()}`;
+        event.event_id = `evt_${hashSHA256(eventData)?.substring(0, 16) || Date.now()}`;
       }
-      return !isDuplicateEvent(eventId);
+      return event;
+    });
+    
+    // Segundo passo: filtrar duplicatas usando os event_ids
+    const filteredData = eventsWithIds.filter((event: any) => {
+      return !isDuplicateEvent(event.event_id);
     });
 
     const duplicatesBlocked = originalCount - filteredData.length;
@@ -287,7 +312,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           if (anyReq.cookies && anyReq.cookies.session_id) {
             sessionId = anyReq.cookies.session_id;
           } else {
-            sessionId = `sess_${Date.now()}_${Math.random().toString(36).substr(2, 10)}`;
+            sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 12)}`;
           }
         }
         externalId = sessionId ? hashSHA256(sessionId) : null;
@@ -299,18 +324,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const eventName = event.event_name || "Lead";
       const eventSourceUrl =
         event.event_source_url || origin || (req.headers.referer as string) || "https://www.digitalpaisagismo.com";
-      const eventTime = event.event_time ? Math.floor(Number(event.event_time)) : Math.floor(Date.now() / 1000);
+      const eventTime = event.event_time && !isNaN(Number(event.event_time)) ? Math.floor(Number(event.event_time)) : Math.floor(Date.now() / 1000);
       
-      // ✅ CORREÇÃO CRÍTICA: Usar event_id do frontend ou gerar baseado em dados consistentes
-      let eventId = event.event_id;
-      if (!eventId) {
-        // Gerar event_id determinístico baseado em dados do evento para consistência
-        const eventData = `${eventName}_${eventTime}_${externalId || 'no_ext_id'}_${eventSourceUrl}`;
-        eventId = `evt_${hashSHA256(eventData)?.substring(0, 16) || Date.now()}`;
-        console.warn("⚠️ Event_id gerado no servidor (deve vir do frontend):", eventId);
-      } else {
-        console.log("✅ Event_id recebido do frontend:", eventId);
-      }
+      // ✅ Event_id já foi definido na etapa de deduplicação
+      const eventId = event.event_id;
+      console.log("✅ Event_id processado:", eventId);
       const actionSource = event.action_source || "website";
 
       const customData: Record<string, any> = { ...(event.custom_data || {}) };
