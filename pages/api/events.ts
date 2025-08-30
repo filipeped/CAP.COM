@@ -1,5 +1,3 @@
-// /pages/api/events.ts
-
 // ✅ DIGITAL PAISAGISMO CAPI V8.1 - DEDUPLICAÇÃO CORRIGIDA
 // CORREÇÃO CRÍTICA: Event_id agora é consistente entre pixel e API
 // PROBLEMA IDENTIFICADO: Event_ids aleatórios impediam deduplicação correta
