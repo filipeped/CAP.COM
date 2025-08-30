@@ -1,3 +1,4 @@
+
 // /pages/api/events.ts
 
 // ✅ DIGITAL PAISAGISMO CAPI V8.0 - IPv6 OTIMIZADO + DEDUPLICAÇÃO
