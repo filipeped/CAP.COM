@@ -16,41 +16,51 @@ const META_URL = `https://graph.facebook.com/v19.0/${PIXEL_ID}/events`;
 
 // ✅ SISTEMA DE DEDUPLICAÇÃO MELHORADO
 const eventCache = new Map<string, number>();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutos (como events_deploy)
-const MAX_CACHE_SIZE = 10000; // Como events_deploy
+const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 horas (Meta recomenda 24h para deduplicação)
+const MAX_CACHE_SIZE = 50000; // Aumentado para suportar mais eventos
 
 function isDuplicateEvent(eventId: string): boolean {
   const now = Date.now();
 
-  // Limpeza automática de eventos expirados
+  // Limpeza automática de eventos expirados (sem for...of)
   let cleanedCount = 0;
-  for (const [id, timestamp] of eventCache.entries()) {
+  eventCache.forEach((timestamp, id) => {
     if (now - timestamp > CACHE_TTL) {
       eventCache.delete(id);
       cleanedCount++;
     }
-  }
+  });
 
   if (cleanedCount > 0) {
-    console.log(`🧹 Cache limpo: ${cleanedCount} eventos expirados removidos`);
+    console.log(`🧹 Cache limpo: ${cleanedCount} eventos expirados removidos (TTL: 24h)`);
   }
 
   // Verificar se é duplicata
   if (eventCache.has(eventId)) {
-    console.warn('🚫 Evento duplicado bloqueado:', eventId);
+    const lastSeen = eventCache.get(eventId);
+    const timeDiff = now - (lastSeen || 0);
+    console.warn(`🚫 Evento duplicado bloqueado: ${eventId} (última ocorrência: ${Math.round(timeDiff/1000)}s atrás)`);
     return true;
   }
 
   // Controle de tamanho do cache
   if (eventCache.size >= MAX_CACHE_SIZE) {
-    const oldestKey = eventCache.keys().next().value;
-    eventCache.delete(oldestKey);
-    console.log('🗑️ Cache cheio: evento mais antigo removido');
+    // Remove 10% do cache quando atingir o limite para melhor performance
+    const itemsToRemove = Math.floor(MAX_CACHE_SIZE * 0.1);
+    let removedCount = 0;
+    
+    for (const [eventId] of eventCache) {
+      if (removedCount >= itemsToRemove) break;
+      eventCache.delete(eventId);
+      removedCount++;
+    }
+    
+    console.log(`🗑️ Cache overflow: ${removedCount} eventos mais antigos removidos (${eventCache.size}/${MAX_CACHE_SIZE})`);
   }
 
   // Adicionar ao cache
   eventCache.set(eventId, now);
-  console.log('✅ Evento adicionado ao cache de deduplicação:', eventId);
+  console.log(`✅ Evento adicionado ao cache de deduplicação: ${eventId} (cache size: ${eventCache.size})`);
   return false;
 }
 
@@ -255,11 +265,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: "Payload inválido - campo 'data' obrigatório" });
     }
 
-    // 🛡️ FILTRO DE DEDUPLICAÇÃO: Remover eventos duplicados (LÓGICA DO EVENTS_DEPLOY)
+    // 🛡️ FILTRO DE DEDUPLICAÇÃO MELHORADO: Verificar duplicatas antes do processamento
     const originalCount = req.body.data.length;
-    const filteredData = req.body.data.filter((event: any) => {
-      const eventId = event.event_id || `evt_${Date.now()}_${Math.random().toString(36).substr(2, 10)}`;
-      return !isDuplicateEvent(eventId);
+    // Primeiro passo: gerar event_id para todos os eventos que não têm
+    const eventsWithIds = req.body.data.map((event: any) => {
+      if (!event.event_id) {
+        const eventName = event.event_name || "Lead";
+        const eventTime = event.event_time && !isNaN(Number(event.event_time)) ? Math.floor(Number(event.event_time)) : Math.floor(Date.now() / 1000);
+        const externalId = event.user_data?.external_id || "no_ext_id";
+        const eventSourceUrl = event.event_source_url || origin || (req.headers.referer as string) || "https://www.digitalpaisagismo.com";
+        const eventData = `${eventName}_${eventTime}_${externalId}_${eventSourceUrl}`;
+        event.event_id = `evt_${hashSHA256(eventData)?.substring(0, 16) || Date.now()}`;
+      }
+      return event;
+    });
+    
+    // Segundo passo: filtrar duplicatas usando os event_ids
+    const filteredData = eventsWithIds.filter((event: any) => {
+      return !isDuplicateEvent(event.event_id);
     });
 
     const duplicatesBlocked = originalCount - filteredData.length;
@@ -298,11 +321,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         console.log("✅ External_id recebido do frontend (SHA256):", externalId);
       }
 
-      const eventId = event.event_id || `evt_${Date.now()}_${Math.random().toString(36).substr(2, 10)}`;
       const eventName = event.event_name || "Lead";
       const eventSourceUrl =
         event.event_source_url || origin || (req.headers.referer as string) || "https://www.digitalpaisagismo.com";
       const eventTime = event.event_time && !isNaN(Number(event.event_time)) ? Math.floor(Number(event.event_time)) : Math.floor(Date.now() / 1000);
+      
+      // ✅ Event_id já foi definido na etapa de deduplicação
+      const eventId = event.event_id;
+      console.log("✅ Event_id processado:", eventId);
       const actionSource = event.action_source || "website";
 
       const customData: Record<string, any> = { ...(event.custom_data || {}) };
@@ -377,21 +403,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
 
-    console.log("🔄 Enviando evento para Meta CAPI (Deduplicação Otimizada):", {
+    console.log("🔄 Enviando evento para Meta CAPI (DEDUPLICAÇÃO CORRIGIDA):", {
       events: enrichedData.length,
       original_events: originalCount,
       duplicates_blocked: duplicatesBlocked,
+      deduplication_rate: `${Math.round((duplicatesBlocked / originalCount) * 100)}%`,
       event_names: enrichedData.map((e) => e.event_name),
+      event_ids: enrichedData.map((e) => e.event_id).slice(0, 3), // Primeiros 3 para debug
       ip_type: ipType,
       client_ip: ip,
       has_pii: false,
+      external_ids_count: enrichedData.filter((e) => e.user_data.external_id).length,
+      external_ids_from_frontend: enrichedData.filter(
+        (e) => e.user_data.external_id && e.user_data.external_id.length === 64
+      ).length,
       has_geo_data: enrichedData.some((e) => e.user_data.country || e.user_data.state || e.user_data.city),
       geo_locations: enrichedData
         .filter((e) => e.user_data.country)
         .map((e) => `${e.user_data.country}/${e.user_data.state}/${e.user_data.city}`)
         .slice(0, 3),
       fbc_processed: enrichedData.filter((e) => e.user_data.fbc).length,
-      cache_size: eventCache.size
+      cache_size: eventCache.size,
+      cache_ttl_hours: CACHE_TTL / (60 * 60 * 1000),
     });
 
     const response = await fetch(`${META_URL}?access_token=${ACCESS_TOKEN}`, {
@@ -427,6 +460,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       processing_time_ms: responseTime,
       compression_used: shouldCompress,
       ip_type: ipType,
+      external_ids_sent: enrichedData.filter((e) => e.user_data.external_id).length,
+      sha256_format_count: enrichedData.filter(
+        (e) => e.user_data.external_id && e.user_data.external_id.length === 64
+      ).length,
       cache_size: eventCache.size,
     });
 
