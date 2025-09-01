@@ -3,7 +3,7 @@
 // PROBLEMA IDENTIFICADO: Event_ids aleatórios impediam deduplicação correta
 // SOLUÇÃO: Event_ids determinísticos baseados em dados do evento
 // IMPORTANTE: Frontend deve enviar event_id único para cada evento
-// TTL aumentado para 24h conforme recomendação da Meta
+// TTL otimizado para 6h para reduzir eventos fantasma
 // Cache aumentado para 50k eventos para melhor cobertura
 
 import type { NextApiRequest, NextApiResponse } from "next";
@@ -16,7 +16,7 @@ const META_URL = `https://graph.facebook.com/v19.0/${PIXEL_ID}/events`;
 
 // ✅ SISTEMA DE DEDUPLICAÇÃO MELHORADO
 const eventCache = new Map<string, number>();
-const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 horas (Meta recomenda 24h para deduplicação)
+const CACHE_TTL = 6 * 60 * 60 * 1000; // 6 horas (otimizado para reduzir eventos fantasma)
 const MAX_CACHE_SIZE = 50000; // Aumentado para suportar mais eventos
 
 function isDuplicateEvent(eventId: string): boolean {
@@ -32,7 +32,7 @@ function isDuplicateEvent(eventId: string): boolean {
   });
 
   if (cleanedCount > 0) {
-    console.log(`🧹 Cache limpo: ${cleanedCount} eventos expirados removidos (TTL: 24h)`);
+    console.log(`🧹 Cache limpo: ${cleanedCount} eventos expirados removidos (TTL: 6h)`);
   }
 
   // Verificar se é duplicata
@@ -64,11 +64,11 @@ function isDuplicateEvent(eventId: string): boolean {
   return false;
 }
 
-// ✅ SIMPLIFICADO: Hash SHA256 sem normalização de acentos
-function hashSHA256(value: string): string | null {
+// ✅ MELHORADO: Hash SHA256 com fallback robusto
+function hashSHA256(value: string): string {
   if (!value || typeof value !== "string") {
-    console.warn("⚠️ hashSHA256: Valor inválido:", value);
-    return null;
+    console.warn("⚠️ hashSHA256: Valor inválido, usando fallback:", value);
+    return crypto.createHash("sha256").update(`fallback_${Date.now()}_${Math.random()}`).digest("hex");
   }
   return crypto.createHash("sha256").update(value.trim()).digest("hex");
 }
@@ -206,7 +206,7 @@ function processFbc(fbc: string): string | null {
   return null;
 }
 
-const RATE_LIMIT = 30;
+const RATE_LIMIT = 100; // Aumentado para suportar picos de tráfego
 const rateLimitMap = new Map<string, number[]>();
 
 function rateLimit(ip: string): boolean {
@@ -267,15 +267,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // 🛡️ FILTRO DE DEDUPLICAÇÃO MELHORADO: Verificar duplicatas antes do processamento
     const originalCount = req.body.data.length;
-    // Primeiro passo: gerar event_id para todos os eventos que não têm
+    // ✅ CORRIGIDO: Priorizar event_id do frontend para consistência Pixel/CAPI
     const eventsWithIds = req.body.data.map((event: any) => {
       if (!event.event_id) {
+        // Gerar event_id determinístico apenas como fallback
         const eventName = event.event_name || "Lead";
         const eventTime = event.event_time && !isNaN(Number(event.event_time)) ? Math.floor(Number(event.event_time)) : Math.floor(Date.now() / 1000);
         const externalId = event.user_data?.external_id || "no_ext_id";
         const eventSourceUrl = event.event_source_url || origin || (req.headers.referer as string) || "https://www.digitalpaisagismo.com";
         const eventData = `${eventName}_${eventTime}_${externalId}_${eventSourceUrl}`;
-        event.event_id = `evt_${hashSHA256(eventData)?.substring(0, 16) || Date.now()}`;
+        event.event_id = `evt_${hashSHA256(eventData).substring(0, 16)}`;
+        console.warn("⚠️ Event_id gerado no servidor (fallback) - deve vir do frontend:", event.event_id);
+      } else {
+        console.log("✅ Event_id recebido do frontend (consistência Pixel/CAPI):", event.event_id);
       }
       return event;
     });
@@ -312,7 +316,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           if (anyReq.cookies && anyReq.cookies.session_id) {
             sessionId = anyReq.cookies.session_id;
           } else {
-            sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 12)}`;
+            sessionId = `sess_${Date.now()}_${crypto.randomUUID().replace(/-/g, '').substring(0, 12)}`;
           }
         }
         externalId = sessionId ? hashSHA256(sessionId) : null;
@@ -401,7 +405,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     };
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 15000); // Aumentado para 15s
 
     console.log("🔄 Enviando evento para Meta CAPI (DEDUPLICAÇÃO CORRIGIDA):", {
       events: enrichedData.length,
@@ -482,7 +486,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (error?.name === "AbortError") {
       return res
         .status(408)
-        .json({ error: "Timeout ao enviar evento para a Meta", timeout_ms: 8000 });
+        .json({ error: "Timeout ao enviar evento para a Meta", timeout_ms: 15000 });
     }
     res.status(500).json({ error: "Erro interno no servidor CAPI." });
   }
