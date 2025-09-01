@@ -68,7 +68,10 @@ function isDuplicateEvent(eventId: string): boolean {
 function hashSHA256(value: string): string {
   if (!value || typeof value !== "string") {
     console.warn("⚠️ hashSHA256: Valor inválido, usando fallback:", value);
-    return crypto.createHash("sha256").update(`fallback_${Date.now()}_${Math.random()}`).digest("hex");
+    // ✅ CORRIGIDO: Fallback determinístico sem Math.random()
+    const timestamp = Date.now();
+    const processId = process.pid || 0;
+    return crypto.createHash("sha256").update(`fallback_${timestamp}_${processId}_${typeof value}`).digest("hex");
   }
   return crypto.createHash("sha256").update(value.trim()).digest("hex");
 }
