@@ -381,6 +381,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         userData.city = event.user_data.city.toLowerCase().trim();
         console.log("🌍 City adicionado:", userData.city);
       }
+      if (typeof event.user_data?.postal === "string" && event.user_data.postal.trim()) {
+        userData.zp = event.user_data.postal.trim();
+        console.log("🌍 Postal Code (zp) adicionado:", userData.zp);
+      }
 
       return {
         event_name: eventName,
