@@ -68,10 +68,7 @@ function isDuplicateEvent(eventId: string): boolean {
 function hashSHA256(value: string): string {
   if (!value || typeof value !== "string") {
     console.warn("⚠️ hashSHA256: Valor inválido, usando fallback:", value);
-    // ✅ CORRIGIDO: Fallback determinístico sem Math.random()
-    const timestamp = Date.now();
-    const processId = process.pid || 0;
-    return crypto.createHash("sha256").update(`fallback_${timestamp}_${processId}_${typeof value}`).digest("hex");
+    return crypto.createHash("sha256").update(`fallback_${Date.now()}_${Math.random()}`).digest("hex");
   }
   return crypto.createHash("sha256").update(value.trim()).digest("hex");
 }
@@ -312,7 +309,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const enrichedData = filteredData.map((event: any) => {
       let externalId = event.user_data?.external_id || null;
 
-      if (!externalId) {
+      if (externalId) {
+        // ✅ Validar formato SHA256 do frontend
+        const isValidSHA256 = /^[a-f0-9]{64}$/i.test(externalId);
+        if (isValidSHA256) {
+          console.log("✅ External_id válido do frontend:", externalId.substring(0, 20) + "...");
+        } else {
+          console.warn("⚠️ External_id do frontend com formato inválido, gerando fallback");
+          let sessionId = event.session_id;
+          if (!sessionId) {
+            const anyReq = req as any;
+            if (anyReq.cookies && anyReq.cookies.session_id) {
+              sessionId = anyReq.cookies.session_id;
+            } else {
+              sessionId = `sess_${Date.now()}_${crypto.randomUUID().replace(/-/g, '').substring(0, 12)}`;
+            }
+          }
+          externalId = sessionId ? hashSHA256(sessionId) : null;
+        }
+      } else {
+        // ⚠️ Fallback apenas se realmente não fornecido
         let sessionId = event.session_id;
         if (!sessionId) {
           const anyReq = req as any;
@@ -323,9 +339,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           }
         }
         externalId = sessionId ? hashSHA256(sessionId) : null;
-        console.log("⚠️ External_id gerado no servidor (fallback):", externalId);
-      } else {
-        console.log("✅ External_id recebido do frontend (SHA256):", externalId);
+        console.log("🆔 External_id gerado via fallback (sessão):", externalId?.substring(0, 20) + "...");
       }
 
       const eventName = event.event_name || "Lead";
