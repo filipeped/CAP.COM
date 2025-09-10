@@ -64,10 +64,6 @@ function isDuplicateEvent(eventId: string): boolean {
   return false;
 }
 
-// Cache para validações SHA256 para melhorar performance
-const sha256ValidationCache = new Map<string, boolean>();
-const VALIDATION_CACHE_SIZE = 1000;
-
 // ✅ MELHORADO: Hash SHA256 com fallback robusto
 function hashSHA256(value: string): string {
   if (!value || typeof value !== "string") {
@@ -75,26 +71,6 @@ function hashSHA256(value: string): string {
     return crypto.createHash("sha256").update(`fallback_${Date.now()}_${Math.random()}`).digest("hex");
   }
   return crypto.createHash("sha256").update(value.trim()).digest("hex");
-}
-
-// Função otimizada para validar SHA256
-function isValidSHA256(hash: string): boolean {
-  // Verifica cache primeiro
-  if (sha256ValidationCache.has(hash)) {
-    return sha256ValidationCache.get(hash)!;
-  }
-  
-  // Validação básica: 64 caracteres hexadecimais
-  const isValid = /^[a-f0-9]{64}$/i.test(hash);
-  
-  // Adiciona ao cache (com limite de tamanho)
-  if (sha256ValidationCache.size >= VALIDATION_CACHE_SIZE) {
-    const firstKey = sha256ValidationCache.keys().next().value;
-    sha256ValidationCache.delete(firstKey);
-  }
-  sha256ValidationCache.set(hash, isValid);
-  
-  return isValid;
 }
 
 // ✅ IPv6 INTELIGENTE: Detecção e validação de IP com prioridade IPv6
@@ -333,23 +309,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const enrichedData = filteredData.map((event: any) => {
       let externalId = event.user_data?.external_id || null;
 
-      if (externalId) {
-        // ✅ Validar formato SHA256 do frontend
-        if (!isValidSHA256(externalId)) {
-          let sessionId = event.session_id;
-          if (!sessionId) {
-            const anyReq = req as any;
-            if (anyReq.cookies && anyReq.cookies.session_id) {
-              sessionId = anyReq.cookies.session_id;
-            } else {
-              sessionId = `sess_${Date.now()}_${crypto.randomUUID().replace(/-/g, '').substring(0, 12)}`;
-            }
-          }
-          externalId = sessionId ? hashSHA256(sessionId) : null;
-          console.warn("⚠️ External_id inválido, fallback gerado");
-        }
-      } else {
-        // ⚠️ Fallback apenas se realmente não fornecido
+      if (!externalId) {
         let sessionId = event.session_id;
         if (!sessionId) {
           const anyReq = req as any;
@@ -360,6 +320,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           }
         }
         externalId = sessionId ? hashSHA256(sessionId) : null;
+        console.log("⚠️ External_id gerado no servidor (fallback):", externalId);
+      } else {
+        console.log("✅ External_id recebido do frontend (SHA256):", externalId);
       }
 
       const eventName = event.event_name || "Lead";
@@ -369,6 +332,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       
       // ✅ Event_id já foi definido na etapa de deduplicação
       const eventId = event.event_id;
+      console.log("✅ Event_id processado:", eventId);
       const actionSource = event.action_source || "website";
 
       const customData: Record<string, any> = { ...(event.custom_data || {}) };
@@ -391,6 +355,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const fbpPattern = /^fb\.[0-9]+\.[0-9]+\.[A-Za-z0-9_-]+$/;
         if (fbpPattern.test(event.user_data.fbp)) {
           userData.fbp = event.user_data.fbp;
+          console.log("✅ FBP válido preservado:", event.user_data.fbp);
         } else {
           console.warn("⚠️ FBP formato inválido ignorado:", event.user_data.fbp);
         }
@@ -400,17 +365,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const processedFbc = processFbc(event.user_data.fbc);
         if (processedFbc) {
           userData.fbc = processedFbc;
+          console.log("✅ FBC processado e preservado:", processedFbc);
         }
       }
 
       if (typeof event.user_data?.country === "string" && event.user_data.country.trim()) {
         userData.country = event.user_data.country.toLowerCase().trim();
+        console.log("🌍 Country adicionado:", userData.country);
       }
       if (typeof event.user_data?.state === "string" && event.user_data.state.trim()) {
         userData.state = event.user_data.state.toLowerCase().trim();
+        console.log("🌍 State adicionado:", userData.state);
       }
       if (typeof event.user_data?.city === "string" && event.user_data.city.trim()) {
         userData.city = event.user_data.city.toLowerCase().trim();
+        console.log("🌍 City adicionado:", userData.city);
       }
 
       return {
