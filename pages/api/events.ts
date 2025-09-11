@@ -362,19 +362,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let externalId = event.user_data?.external_id || null;
 
       if (!externalId) {
+        // ✅ CORRIGIDO: Usar mesma lógica do DeduplicationEngine para consistência
         let sessionId = event.session_id;
         if (!sessionId) {
           const anyReq = req as any;
           if (anyReq.cookies && anyReq.cookies.session_id) {
             sessionId = anyReq.cookies.session_id;
           } else {
-            sessionId = `sess_${Date.now()}_${crypto.randomUUID().replace(/-/g, '').substring(0, 12)}`;
+            // Gerar sessionId usando mesma lógica do frontend
+            const timestamp = Math.floor(Date.now() / 1000);
+            const randomStr = crypto.randomBytes(8).toString('hex');
+            sessionId = `${timestamp}_${randomStr}`;
           }
         }
+        // Usar SHA256 consistente com DeduplicationEngine
         externalId = sessionId ? hashSHA256(sessionId) : null;
-        console.log("⚠️ External_id gerado no servidor (fallback):", externalId);
+        console.log("⚠️ External_id gerado no servidor (fallback - consistente com DeduplicationEngine):", externalId);
       } else {
-        console.log("✅ External_id recebido do frontend (SHA256):", externalId);
+        console.log("✅ External_id recebido do frontend (SHA256 - DeduplicationEngine):", externalId);
       }
 
       const eventName = event.event_name || "Lead";
@@ -526,41 +531,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       sha256_format_count: enrichedData.filter(
         (e) => e.user_data.external_id && e.user_data.external_id.length === 64
       ).length,
-      geo_enrichment_count: enrichedData.filter((e) => e.user_data.country).length,
-      fbc_count: enrichedData.filter((e) => e.user_data.fbc).length,
       cache_size: eventCache.size,
     });
 
-    return res.status(200).json({
-      success: true,
-      events_processed: enrichedData.length,
-      duplicates_blocked: duplicatesBlocked,
-      original_count: originalCount,
-      deduplication_rate: `${Math.round((duplicatesBlocked / originalCount) * 100)}%`,
-      processing_time_ms: responseTime,
-      ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
-      ipv6_optimized: true,
-      cache_size: eventCache.size,
-      meta_response: {
-        events_received: data.events_received || 0,
-        messages: data.messages || [],
-        fbtrace_id: data.fbtrace_id,
+    res.status(200).json({
+      ...data,
+      ip_info: { type: ip.includes(':') ? 'IPv6' : 'IPv4', address: ip },
+      deduplication_info: {
+        original_events: originalCount,
+        processed_events: enrichedData.length,
+        duplicates_blocked: duplicatesBlocked,
+        cache_size: eventCache.size,
       },
     });
   } catch (error: any) {
-    const responseTime = Date.now() - startTime;
-    console.error("❌ Erro no processamento CAPI:", {
-      error: error.message,
-      stack: error.stack,
-      ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
-      processing_time_ms: responseTime,
-    });
-
-    return res.status(500).json({
-      error: "Erro interno do servidor",
-      message: error.message,
-      processing_time_ms: responseTime,
-      ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
-    });
+    console.error("❌ Erro no Proxy CAPI:", error);
+    if (error?.name === "AbortError") {
+      return res
+        .status(408)
+        .json({ error: "Timeout ao enviar evento para a Meta", timeout_ms: 15000 });
+    }
+    res.status(500).json({ error: "Erro interno no servidor CAPI." });
   }
 }
