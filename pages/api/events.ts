@@ -169,6 +169,50 @@ function getClientIP(
   return { ip: fallbackIP, type: "unknown" };
 }
 
+// ✅ NOVA FUNÇÃO: Formatação otimizada de IP para Meta CAPI
+function formatIPForMeta(ip: string, ipType: string): string {
+  if (ipType === 'IPv6') {
+    // Remove colchetes se presentes e garante formato limpo
+    let cleanIP = ip.replace(/^\[|\]$/g, '');
+    
+    // Normaliza IPv6 para formato completo se necessário
+    if (cleanIP.includes('::')) {
+      // Expande notação comprimida se necessário
+      const parts = cleanIP.split('::');
+      if (parts.length === 2) {
+        const leftParts = parts[0] ? parts[0].split(':') : [];
+        const rightParts = parts[1] ? parts[1].split(':') : [];
+        const missingParts = 8 - leftParts.length - rightParts.length;
+        const middleParts = Array(missingParts).fill('0000');
+        cleanIP = [...leftParts, ...middleParts, ...rightParts].join(':');
+      }
+    }
+    
+    console.log('🌐 IPv6 formatado para Meta:', {
+      original: ip,
+      formatted: cleanIP,
+      is_expanded: !cleanIP.includes('::'),
+      length: cleanIP.length
+    });
+    
+    return cleanIP;
+  }
+  
+  if (ipType === 'IPv4') {
+    // Para IPv4, a Meta recomenda conversão para IPv6-mapped
+    // Formato IPv4-mapped IPv6: ::ffff:192.168.1.1
+    const ipv6Mapped = `::ffff:${ip}`;
+    console.log('🔄 IPv4 convertido para IPv6-mapped:', {
+      original_ipv4: ip,
+      ipv6_mapped: ipv6Mapped,
+      reason: 'Meta prefere IPv6 sobre IPv4'
+    });
+    return ipv6Mapped;
+  }
+  
+  return ip;
+}
+
 // ✅ NOVA FUNÇÃO: Processamento robusto do FBC
 function processFbc(fbc: string): string | null {
   if (!fbc || typeof fbc !== "string") {
@@ -306,6 +350,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
+    // ✅ FORMATAÇÃO IPv6: Aplicar formatação otimizada para Meta CAPI
+    const formattedIP = formatIPForMeta(ip, ipType);
+
     const enrichedData = filteredData.map((event: any) => {
       let externalId = event.user_data?.external_id || null;
 
@@ -347,7 +394,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       const userData: any = {
         ...(externalId && { external_id: externalId }),
-        client_ip_address: ip,
+        client_ip_address: formattedIP,
         client_user_agent: userAgent,
       };
 
@@ -419,7 +466,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       event_names: enrichedData.map((e) => e.event_name),
       event_ids: enrichedData.map((e) => e.event_id).slice(0, 3), // Primeiros 3 para debug
       ip_type: ipType,
-      client_ip: ip,
+      client_ip_original: ip,
+      client_ip_formatted: formattedIP,
+      ipv6_conversion_applied: ipType === 'IPv4' ? 'IPv4→IPv6-mapped' : 'Native IPv6',
       has_pii: false,
       external_ids_count: enrichedData.filter((e) => e.user_data.external_id).length,
       external_ids_from_frontend: enrichedData.filter(
