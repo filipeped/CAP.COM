@@ -169,30 +169,35 @@ function getClientIP(
   return { ip: fallbackIP, type: "unknown" };
 }
 
-// ✅ NOVA FUNÇÃO: Formatação otimizada de IP para Meta CAPI
-function formatIPForMeta(ip: string, ipType: string): string {
+// ✅ NOVA FUNÇÃO: Formatação otimizada de IP para Meta CAPI (consistente com frontend)
+function formatIPForMeta(ip: string): string {
+  // Detectar tipo de IP automaticamente
+  const detectIPType = (ip: string): string => {
+    if (!ip || ip === 'unknown') return 'unknown';
+    
+    // IPv6 contém ':'
+    if (ip.includes(':')) {
+      return 'IPv6';
+    }
+    
+    // IPv4 contém apenas números e pontos
+    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+      return 'IPv4';
+    }
+    
+    return 'unknown';
+  };
+  
+  const ipType = detectIPType(ip);
+  
   if (ipType === 'IPv6') {
     // Remove colchetes se presentes e garante formato limpo
     let cleanIP = ip.replace(/^\[|\]$/g, '');
     
-    // Normaliza IPv6 para formato completo se necessário
-    if (cleanIP.includes('::')) {
-      // Expande notação comprimida se necessário
-      const parts = cleanIP.split('::');
-      if (parts.length === 2) {
-        const leftParts = parts[0] ? parts[0].split(':') : [];
-        const rightParts = parts[1] ? parts[1].split(':') : [];
-        const missingParts = 8 - leftParts.length - rightParts.length;
-        const middleParts = Array(missingParts).fill('0000');
-        cleanIP = [...leftParts, ...middleParts, ...rightParts].join(':');
-      }
-    }
-    
     console.log('🌐 IPv6 formatado para Meta:', {
       original: ip,
       formatted: cleanIP,
-      is_expanded: !cleanIP.includes('::'),
-      length: cleanIP.length
+      is_native_ipv6: true
     });
     
     return cleanIP;
@@ -351,7 +356,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // ✅ FORMATAÇÃO IPv6: Aplicar formatação otimizada para Meta CAPI
-    const formattedIP = formatIPForMeta(ip, ipType);
+    const formattedIP = formatIPForMeta(ip);
 
     const enrichedData = filteredData.map((event: any) => {
       let externalId = event.user_data?.external_id || null;
@@ -465,10 +470,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       deduplication_rate: `${Math.round((duplicatesBlocked / originalCount) * 100)}%`,
       event_names: enrichedData.map((e) => e.event_name),
       event_ids: enrichedData.map((e) => e.event_id).slice(0, 3), // Primeiros 3 para debug
-      ip_type: ipType,
+      ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
       client_ip_original: ip,
       client_ip_formatted: formattedIP,
-      ipv6_conversion_applied: ipType === 'IPv4' ? 'IPv4→IPv6-mapped' : 'Native IPv6',
+      ipv6_conversion_applied: ip.includes(':') ? 'Native IPv6' : 'IPv4→IPv6-mapped',
       has_pii: false,
       external_ids_count: enrichedData.filter((e) => e.user_data.external_id).length,
       external_ids_from_frontend: enrichedData.filter(
@@ -500,7 +505,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         status: response.status,
         data,
         events: enrichedData.length,
-        ip_type: ipType,
+        ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
         duplicates_blocked: duplicatesBlocked,
       });
 
@@ -516,31 +521,46 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       duplicates_blocked: duplicatesBlocked,
       processing_time_ms: responseTime,
       compression_used: shouldCompress,
-      ip_type: ipType,
+      ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
       external_ids_sent: enrichedData.filter((e) => e.user_data.external_id).length,
       sha256_format_count: enrichedData.filter(
         (e) => e.user_data.external_id && e.user_data.external_id.length === 64
       ).length,
+      geo_enrichment_count: enrichedData.filter((e) => e.user_data.country).length,
+      fbc_count: enrichedData.filter((e) => e.user_data.fbc).length,
       cache_size: eventCache.size,
     });
 
-    res.status(200).json({
-      ...data,
-      ip_info: { type: ipType, address: ip },
-      deduplication_info: {
-        original_events: originalCount,
-        processed_events: enrichedData.length,
-        duplicates_blocked: duplicatesBlocked,
-        cache_size: eventCache.size,
+    return res.status(200).json({
+      success: true,
+      events_processed: enrichedData.length,
+      duplicates_blocked: duplicatesBlocked,
+      original_count: originalCount,
+      deduplication_rate: `${Math.round((duplicatesBlocked / originalCount) * 100)}%`,
+      processing_time_ms: responseTime,
+      ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
+      ipv6_optimized: true,
+      cache_size: eventCache.size,
+      meta_response: {
+        events_received: data.events_received || 0,
+        messages: data.messages || [],
+        fbtrace_id: data.fbtrace_id,
       },
     });
   } catch (error: any) {
-    console.error("❌ Erro no Proxy CAPI:", error);
-    if (error?.name === "AbortError") {
-      return res
-        .status(408)
-        .json({ error: "Timeout ao enviar evento para a Meta", timeout_ms: 15000 });
-    }
-    res.status(500).json({ error: "Erro interno no servidor CAPI." });
+    const responseTime = Date.now() - startTime;
+    console.error("❌ Erro no processamento CAPI:", {
+      error: error.message,
+      stack: error.stack,
+      ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
+      processing_time_ms: responseTime,
+    });
+
+    return res.status(500).json({
+      error: "Erro interno do servidor",
+      message: error.message,
+      processing_time_ms: responseTime,
+      ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
+    });
   }
 }
