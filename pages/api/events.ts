@@ -15,7 +15,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
 import zlib from "zlib";
-import { ExternalIdManager } from '@/utils/ExternalIdManager';
+import { ExternalIdManager } from '../../src/utils/ExternalIdManager';
 
 const PIXEL_ID = "765087775987515";
 const ACCESS_TOKEN = "EAAQfmxkTTZCcBPHGbA2ojC29bVbNPa6GM3nxMxsZC29ijBmuyexVifaGnrjFZBZBS6LEkaR29X3tc5TWn4SHHffeXiPvexZAYKP5mTMoYGx5AoVYaluaqBTtiKIjWALxuMZAPVcBk1PuYCb0nJfhpzAezh018LU3cT45vuEflMicoQEHHk3H5YKNVAPaUZC6yzhcQZDZD";
