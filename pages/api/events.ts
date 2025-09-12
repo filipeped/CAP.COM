@@ -9,6 +9,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
 import zlib from "zlib";
+import { ExternalIdManager } from '../../src/utils/ExternalIdManager';
 
 const PIXEL_ID = "765087775987515";
 const ACCESS_TOKEN = "EAAQfmxkTTZCcBPHGbA2ojC29bVbNPa6GM3nxMxsZC29ijBmuyexVifaGnrjFZBZBS6LEkaR29X3tc5TWn4SHHffeXiPvexZAYKP5mTMoYGx5AoVYaluaqBTtiKIjWALxuMZAPVcBk1PuYCb0nJfhpzAezh018LU3cT45vuEflMicoQEHHk3H5YKNVAPaUZC6yzhcQZDZD";
@@ -64,13 +65,9 @@ function isDuplicateEvent(eventId: string): boolean {
   return false;
 }
 
-// ✅ MELHORADO: Hash SHA256 com fallback robusto
+// ✅ Hash SHA256 delegado para ExternalIdManager (mantido para compatibilidade)
 function hashSHA256(value: string): string {
-  if (!value || typeof value !== "string") {
-    console.warn("⚠️ hashSHA256: Valor inválido, usando fallback:", value);
-    return crypto.createHash("sha256").update(`fallback_${Date.now()}_${Math.random()}`).digest("hex");
-  }
-  return crypto.createHash("sha256").update(value.trim()).digest("hex");
+  return ExternalIdManager.hashSHA256Sync(value);
 }
 
 // ✅ IPv6 INTELIGENTE: Detecção e validação de IP com prioridade IPv6
@@ -192,7 +189,7 @@ function formatIPForMeta(ip: string): string {
   
   if (ipType === 'IPv6') {
     // Remove colchetes se presentes e garante formato limpo
-    let cleanIP = ip.replace(/^\[|\]$/g, '');
+    const cleanIP = ip.replace(/^\[|\]$/g, '');
     
     console.log('🌐 IPv6 formatado para Meta:', {
       original: ip,
@@ -362,24 +359,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let externalId = event.user_data?.external_id || null;
 
       if (!externalId) {
-        // ✅ CORRIGIDO: Usar mesma lógica do DeduplicationEngine para consistência
+        // ✅ CORRIGIDO: Usar ExternalIdManager centralizado para consistência
         let sessionId = event.session_id;
         if (!sessionId) {
           const anyReq = req as any;
           if (anyReq.cookies && anyReq.cookies.session_id) {
             sessionId = anyReq.cookies.session_id;
           } else {
-            // Gerar sessionId usando mesma lógica do frontend
-            const timestamp = Math.floor(Date.now() / 1000);
-            const randomStr = crypto.randomBytes(8).toString('hex');
-            sessionId = `${timestamp}_${randomStr}`;
+            // Gerar sessionId usando ExternalIdManager
+            sessionId = ExternalIdManager.generateSessionId();
           }
         }
-        // Usar SHA256 consistente com DeduplicationEngine
-        externalId = sessionId ? hashSHA256(sessionId) : null;
-        console.log("⚠️ External_id gerado no servidor (fallback - consistente com DeduplicationEngine):", externalId);
+        // Usar ExternalIdManager para gerar external_id consistente
+        externalId = ExternalIdManager.generateExternalIdFromSession(sessionId, formattedIP);
+        console.log("⚠️ External_id gerado via ExternalIdManager (fallback):", externalId);
       } else {
-        console.log("✅ External_id recebido do frontend (SHA256 - DeduplicationEngine):", externalId);
+        console.log("✅ External_id recebido do frontend (ExternalIdManager):", externalId);
       }
 
       const eventName = event.event_name || "Lead";
