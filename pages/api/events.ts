@@ -15,7 +15,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
 import zlib from "zlib";
-import { ExternalIdManager } from '@/utils/ExternalIdManager';
+import { ExternalIdManager } from '../../src/utils/ExternalIdManager';
 
 const PIXEL_ID = "765087775987515";
 const ACCESS_TOKEN = "EAAQfmxkTTZCcBPHGbA2ojC29bVbNPa6GM3nxMxsZC29ijBmuyexVifaGnrjFZBZBS6LEkaR29X3tc5TWn4SHHffeXiPvexZAYKP5mTMoYGx5AoVYaluaqBTtiKIjWALxuMZAPVcBk1PuYCb0nJfhpzAezh018LU3cT45vuEflMicoQEHHk3H5YKNVAPaUZC6yzhcQZDZD";
@@ -537,77 +537,55 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(response.status).json({
         error: "Erro da Meta",
         details: data,
-        events_sent: enrichedData.length,
-        duplicates_blocked: duplicatesBlocked,
-        response_time_ms: responseTime,
+        processing_time_ms: responseTime,
       });
     }
 
     // ✅ MÉTRICAS DE QUALIDADE AVANÇADAS
     const qualityMetrics = {
-      events_received: originalCount,
-      events_sent: enrichedData.length,
+      events_processed: enrichedData.length,
       duplicates_blocked: duplicatesBlocked,
       deduplication_rate: Math.round((duplicatesBlocked / originalCount) * 100),
-      external_id_coverage: Math.round((enrichedData.filter(e => e.user_data.external_id).length / enrichedData.length) * 100),
-      fbp_coverage: Math.round((enrichedData.filter(e => e.user_data.fbp).length / enrichedData.length) * 100),
-      fbc_coverage: Math.round((enrichedData.filter(e => e.user_data.fbc).length / enrichedData.length) * 100),
-      geo_coverage: Math.round((enrichedData.filter(e => e.user_data.country).length / enrichedData.length) * 100),
-      ipv6_usage: ip.includes(':') ? 'Native IPv6' : 'IPv4→IPv6-mapped',
-      response_time_ms: responseTime,
-      cache_efficiency: {
-        current_size: eventCache.size,
-        max_size: MAX_CACHE_SIZE,
-        utilization_percent: Math.round((eventCache.size / MAX_CACHE_SIZE) * 100),
-        ttl_hours: CACHE_TTL / (60 * 60 * 1000)
-      }
+      processing_time_ms: responseTime,
+      compression_used: shouldCompress,
+      ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
+      external_ids_sent: enrichedData.filter((e) => e.user_data.external_id).length,
+      external_id_coverage: Math.round((enrichedData.filter((e) => e.user_data.external_id).length / enrichedData.length) * 100),
+      sha256_format_count: enrichedData.filter(
+        (e) => e.user_data.external_id && e.user_data.external_id.length === 64
+      ).length,
+      fbp_coverage: Math.round((enrichedData.filter((e) => e.user_data.fbp).length / enrichedData.length) * 100),
+      fbc_coverage: Math.round((enrichedData.filter((e) => e.user_data.fbc).length / enrichedData.length) * 100),
+      geo_coverage: Math.round((enrichedData.filter((e) => e.user_data.country).length / enrichedData.length) * 100),
+      cache_size: eventCache.size,
+      cache_efficiency: eventCache.size > 0 ? Math.round((duplicatesBlocked / eventCache.size) * 100) : 0
     };
 
-    console.log("✅ Meta CAPI Response (OTIMIZADO V8.2):", {
-      status: response.status,
-      meta_response: data,
+    console.log("✅ Evento enviado com sucesso para Meta CAPI (OTIMIZADO):", qualityMetrics);
+
+    res.status(200).json({
+      ...data,
+      ip_info: { type: ip.includes(':') ? 'IPv6' : 'IPv4', address: ip },
+      deduplication_info: {
+        original_events: originalCount,
+        processed_events: enrichedData.length,
+        duplicates_blocked: duplicatesBlocked,
+        cache_size: eventCache.size,
+      },
       quality_metrics: qualityMetrics,
-      events_summary: {
-        event_names: enrichedData.map(e => e.event_name),
-        unique_external_ids: [...new Set(enrichedData.map(e => e.user_data.external_id))].length,
-        geo_countries: [...new Set(enrichedData.map(e => e.user_data.country).filter(Boolean))],
-        ip_analysis: {
-          original_ip: ip,
-          formatted_ip: formattedIP,
-          ip_type: ipType,
-          ipv6_optimized: ip.includes(':')
-        }
+      server_info: {
+        version: "8.2-OPTIMIZED",
+        timestamp: new Date().toISOString(),
+        processing_time_ms: responseTime
       }
     });
-
-    return res.status(200).json({
-      success: true,
-      message: "Eventos enviados com sucesso (V8.2-OPTIMIZED)",
-      meta_response: data,
-      quality_metrics: qualityMetrics,
-      performance: {
-        response_time_ms: responseTime,
-        compression_used: shouldCompress,
-        payload_size_bytes: Buffer.byteLength(jsonPayload)
-      }
-    });
-
   } catch (error: any) {
-    const responseTime = Date.now() - startTime;
-    console.error("❌ Erro interno do servidor:", {
-      error: error.message,
-      stack: error.stack,
-      ip,
-      userAgent,
-      origin,
-      response_time_ms: responseTime
-    });
-
-    return res.status(500).json({
-      error: "Erro interno do servidor",
-      message: error.message,
-      response_time_ms: responseTime,
-      timestamp: new Date().toISOString()
-    });
+    console.error("❌ Erro no Proxy CAPI:", error);
+    if (error?.name === "AbortError") {
+      return res
+        .status(408)
+        .json({ error: "Timeout ao enviar evento para a Meta", timeout_ms: 15000 });
+    }
+    res.status(500).json({ error: "Erro interno no servidor CAPI." });
   }
 }
