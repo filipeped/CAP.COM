@@ -1,12 +1,10 @@
-
-// ✅ DIGITAL PAISAGISMO CAPI V8.1 - VERSÃO NEXT.JS COMPLETA
+// ✅ DIGITAL PAISAGISMO CAPI V8.1 - DEDUPLICAÇÃO CORRIGIDA
 // CORREÇÃO CRÍTICA: Event_id agora é consistente entre pixel e API
 // PROBLEMA IDENTIFICADO: Event_ids aleatórios impediam deduplicação correta
 // SOLUÇÃO: Event_ids determinísticos baseados em dados do evento
 // IMPORTANTE: Frontend deve enviar event_id único para cada evento
 // TTL otimizado para 6h para reduzir eventos fantasma
 // Cache aumentado para 50k eventos para melhor cobertura
-// ✅ ADAPTADO PARA NEXT.JS - ExternalIdManager integrado
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
@@ -15,59 +13,6 @@ import zlib from "zlib";
 const PIXEL_ID = "765087775987515";
 const ACCESS_TOKEN = "EAAQfmxkTTZCcBPHGbA2ojC29bVbNPa6GM3nxMxsZC29ijBmuyexVifaGnrjFZBZBS6LEkaR29X3tc5TWn4SHHffeXiPvexZAYKP5mTMoYGx5AoVYaluaqBTtiKIjWALxuMZAPVcBk1PuYCb0nJfhpzAezh018LU3cT45vuEflMicoQEHHk3H5YKNVAPaUZC6yzhcQZDZD";
 const META_URL = `https://graph.facebook.com/v19.0/${PIXEL_ID}/events`;
-
-// ✅ EXTERNAL ID MANAGER INTEGRADO - Resolve problema de importação
-class ExternalIdManager {
-  private static readonly VALIDITY_HOURS = 24;
-  private static _cachedExternalId: string | null = null;
-  private static _cacheTimestamp: number | null = null;
-  private static _cachedSessionId: string | null = null;
-
-  /**
-   * Gera hash SHA256 síncrono para servidor
-   */
-  public static hashSHA256Sync(text: string): string {
-    return crypto.createHash('sha256').update(text).digest('hex');
-  }
-
-  /**
-   * Valida formato do external_id (deve ser SHA256 de 64 caracteres)
-   */
-  static validateExternalId(externalId: string): boolean {
-    return externalId && 
-           externalId.length === 64 && 
-           /^[a-f0-9]{64}$/.test(externalId);
-  }
-
-  /**
-   * Gera session ID único
-   */
-  static generateSessionId(): string {
-    const timestamp = Date.now();
-    const randomPart = Math.random().toString(36).substring(2, 10);
-    return `sess_${timestamp}_${randomPart}`;
-  }
-
-  /**
-   * Gera external_id a partir de session e IP
-   */
-  static generateExternalIdFromSession(sessionId: string, ip: string): string {
-    const timestamp = Date.now();
-    const baseId = `${timestamp}_${sessionId}_${ip}`;
-    return this.hashSHA256Sync(baseId);
-  }
-
-  /**
-   * Gera external_id para ambiente servidor (fallback)
-   */
-  static generateServerFallbackId(sessionId?: string): string {
-    const timestamp = Date.now();
-    const randomPart = Math.random().toString(36).substring(2, 14);
-    const session = sessionId || `server_${timestamp}_${randomPart}`;
-    const baseId = `${timestamp}_${randomPart}_${session}`;
-    return this.hashSHA256Sync(baseId);
-  }
-}
 
 // ✅ SISTEMA DE DEDUPLICAÇÃO MELHORADO
 const eventCache = new Map<string, number>();
@@ -119,9 +64,13 @@ function isDuplicateEvent(eventId: string): boolean {
   return false;
 }
 
-// ✅ Hash SHA256 delegado para ExternalIdManager (mantido para compatibilidade)
+// ✅ MELHORADO: Hash SHA256 com fallback robusto
 function hashSHA256(value: string): string {
-  return ExternalIdManager.hashSHA256Sync(value);
+  if (!value || typeof value !== "string") {
+    console.warn("⚠️ hashSHA256: Valor inválido, usando fallback:", value);
+    return crypto.createHash("sha256").update(`fallback_${Date.now()}_${Math.random()}`).digest("hex");
+  }
+  return crypto.createHash("sha256").update(value.trim()).digest("hex");
 }
 
 // ✅ IPv6 INTELIGENTE: Detecção e validação de IP com prioridade IPv6
@@ -243,7 +192,7 @@ function formatIPForMeta(ip: string): string {
   
   if (ipType === 'IPv6') {
     // Remove colchetes se presentes e garante formato limpo
-    const cleanIP = ip.replace(/^\[|\]$/g, '');
+    let cleanIP = ip.replace(/^\[|\]$/g, '');
     
     console.log('🌐 IPv6 formatado para Meta:', {
       original: ip,
@@ -413,22 +362,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let externalId = event.user_data?.external_id || null;
 
       if (!externalId) {
-        // ✅ CORRIGIDO: Usar ExternalIdManager centralizado para consistência
+        // ✅ CORRIGIDO: Usar mesma lógica do DeduplicationEngine para consistência
         let sessionId = event.session_id;
         if (!sessionId) {
           const anyReq = req as any;
           if (anyReq.cookies && anyReq.cookies.session_id) {
             sessionId = anyReq.cookies.session_id;
           } else {
-            // Gerar sessionId usando ExternalIdManager
-            sessionId = ExternalIdManager.generateSessionId();
+            // Gerar sessionId usando mesma lógica do frontend
+            const timestamp = Math.floor(Date.now() / 1000);
+            const randomStr = crypto.randomBytes(8).toString('hex');
+            sessionId = `${timestamp}_${randomStr}`;
           }
         }
-        // Usar ExternalIdManager para gerar external_id consistente
-        externalId = ExternalIdManager.generateExternalIdFromSession(sessionId, formattedIP);
-        console.log("⚠️ External_id gerado via ExternalIdManager (fallback):", externalId);
+        // Usar SHA256 consistente com DeduplicationEngine
+        externalId = sessionId ? hashSHA256(sessionId) : null;
+        console.log("⚠️ External_id gerado no servidor (fallback - consistente com DeduplicationEngine):", externalId);
       } else {
-        console.log("✅ External_id recebido do frontend (ExternalIdManager):", externalId);
+        console.log("✅ External_id recebido do frontend (SHA256 - DeduplicationEngine):", externalId);
       }
 
       const eventName = event.event_name || "Lead";
@@ -580,42 +531,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       sha256_format_count: enrichedData.filter(
         (e) => e.user_data.external_id && e.user_data.external_id.length === 64
       ).length,
-    });
-
-    return res.status(200).json({
-      success: true,
-      events_processed: enrichedData.length,
-      duplicates_blocked: duplicatesBlocked,
-      original_count: originalCount,
-      deduplication_rate: `${Math.round((duplicatesBlocked / originalCount) * 100)}%`,
-      processing_time_ms: responseTime,
-      ip_info: {
-        original: ip,
-        formatted: formattedIP,
-        type: ip.includes(':') ? 'IPv6' : 'IPv4',
-      },
       cache_size: eventCache.size,
     });
+
+    res.status(200).json({
+      ...data,
+      ip_info: { type: ip.includes(':') ? 'IPv6' : 'IPv4', address: ip },
+      deduplication_info: {
+        original_events: originalCount,
+        processed_events: enrichedData.length,
+        duplicates_blocked: duplicatesBlocked,
+        cache_size: eventCache.size,
+      },
+    });
   } catch (error: any) {
-    const responseTime = Date.now() - startTime;
-    
-    if (error.name === 'AbortError') {
-      console.error("⏰ Timeout na requisição para Meta CAPI (15s)");
-      return res.status(408).json({
-        error: "Timeout na requisição",
-        processing_time_ms: responseTime,
-      });
+    console.error("❌ Erro no Proxy CAPI:", error);
+    if (error?.name === "AbortError") {
+      return res
+        .status(408)
+        .json({ error: "Timeout ao enviar evento para a Meta", timeout_ms: 15000 });
     }
-
-    console.error("❌ Erro interno no servidor CAPI:", {
-      error: error.message,
-      stack: error.stack,
-      processing_time_ms: responseTime,
-    });
-
-    return res.status(500).json({
-      error: "Erro interno do servidor",
-      processing_time_ms: responseTime,
-    });
+    res.status(500).json({ error: "Erro interno no servidor CAPI." });
   }
 }
