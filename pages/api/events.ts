@@ -1,25 +1,73 @@
-// ✅ DIGITAL PAISAGISMO CAPI V8.2-OPTIMIZED - VERSÃO FINAL OTIMIZADA
+
+// ✅ DIGITAL PAISAGISMO CAPI V8.1 - VERSÃO NEXT.JS COMPLETA
 // CORREÇÃO CRÍTICA: Event_id agora é consistente entre pixel e API
 // PROBLEMA IDENTIFICADO: Event_ids aleatórios impediam deduplicação correta
 // SOLUÇÃO: Event_ids determinísticos baseados em dados do evento
 // IMPORTANTE: Frontend deve enviar event_id único para cada evento
 // TTL otimizado para 6h para reduzir eventos fantasma
 // Cache aumentado para 50k eventos para melhor cobertura
-// ✅ NOVAS OTIMIZAÇÕES V8.2:
-// - ExternalIdManager corrigido (generateServerFallbackId)
-// - Validação anti-bot implementada
-// - Métricas de qualidade avançadas
-// - Logs estruturados para debugging
-// - Monitoramento de cobertura (FBP, FBC, Geo, External ID)
+// ✅ ADAPTADO PARA NEXT.JS - ExternalIdManager integrado
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import crypto from "crypto";
 import zlib from "zlib";
-import { ExternalIdManager } from '../../src/utils/ExternalIdManager';
 
 const PIXEL_ID = "765087775987515";
 const ACCESS_TOKEN = "EAAQfmxkTTZCcBPHGbA2ojC29bVbNPa6GM3nxMxsZC29ijBmuyexVifaGnrjFZBZBS6LEkaR29X3tc5TWn4SHHffeXiPvexZAYKP5mTMoYGx5AoVYaluaqBTtiKIjWALxuMZAPVcBk1PuYCb0nJfhpzAezh018LU3cT45vuEflMicoQEHHk3H5YKNVAPaUZC6yzhcQZDZD";
 const META_URL = `https://graph.facebook.com/v19.0/${PIXEL_ID}/events`;
+
+// ✅ EXTERNAL ID MANAGER INTEGRADO - Resolve problema de importação
+class ExternalIdManager {
+  private static readonly VALIDITY_HOURS = 24;
+  private static _cachedExternalId: string | null = null;
+  private static _cacheTimestamp: number | null = null;
+  private static _cachedSessionId: string | null = null;
+
+  /**
+   * Gera hash SHA256 síncrono para servidor
+   */
+  public static hashSHA256Sync(text: string): string {
+    return crypto.createHash('sha256').update(text).digest('hex');
+  }
+
+  /**
+   * Valida formato do external_id (deve ser SHA256 de 64 caracteres)
+   */
+  static validateExternalId(externalId: string): boolean {
+    return externalId && 
+           externalId.length === 64 && 
+           /^[a-f0-9]{64}$/.test(externalId);
+  }
+
+  /**
+   * Gera session ID único
+   */
+  static generateSessionId(): string {
+    const timestamp = Date.now();
+    const randomPart = Math.random().toString(36).substring(2, 10);
+    return `sess_${timestamp}_${randomPart}`;
+  }
+
+  /**
+   * Gera external_id a partir de session e IP
+   */
+  static generateExternalIdFromSession(sessionId: string, ip: string): string {
+    const timestamp = Date.now();
+    const baseId = `${timestamp}_${sessionId}_${ip}`;
+    return this.hashSHA256Sync(baseId);
+  }
+
+  /**
+   * Gera external_id para ambiente servidor (fallback)
+   */
+  static generateServerFallbackId(sessionId?: string): string {
+    const timestamp = Date.now();
+    const randomPart = Math.random().toString(36).substring(2, 14);
+    const session = sessionId || `server_${timestamp}_${randomPart}`;
+    const baseId = `${timestamp}_${randomPart}_${session}`;
+    return this.hashSHA256Sync(baseId);
+  }
+}
 
 // ✅ SISTEMA DE DEDUPLICAÇÃO MELHORADO
 const eventCache = new Map<string, number>();
@@ -312,25 +360,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
   if (!rateLimit(ip)) return res.status(429).json({ error: "Limite de requisições excedido", retry_after: 60 });
 
-  // ✅ VALIDAÇÃO ANTI-BOT MELHORADA
-  const suspiciousPatterns = [
-    /bot|crawler|spider|scraper|headless|phantom|selenium|puppeteer/i,
-    /curl|wget|python|java|go-http|okhttp/i,
-    /facebook|meta|instagram/i // Bloquear crawlers da própria Meta
-  ];
-  
-  const isSuspiciousUA = suspiciousPatterns.some(pattern => pattern.test(userAgent));
-  if (isSuspiciousUA) {
-    console.warn("🤖 Bot detectado e bloqueado:", { userAgent, ip, origin });
-    return res.status(403).json({ error: "Acesso negado - bot detectado" });
-  }
-
-  // Validação adicional de origem
-  if (!origin && !req.headers.referer) {
-    console.warn("⚠️ Requisição sem origem detectada:", { userAgent, ip });
-    return res.status(400).json({ error: "Origem da requisição inválida" });
-  }
-
   try {
     if (!req.body?.data || !Array.isArray(req.body.data)) {
       return res.status(400).json({ error: "Payload inválido - campo 'data' obrigatório" });
@@ -396,7 +425,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           }
         }
         // Usar ExternalIdManager para gerar external_id consistente
-        externalId = ExternalIdManager.generateServerFallbackId(sessionId);
+        externalId = ExternalIdManager.generateExternalIdFromSession(sessionId, formattedIP);
         console.log("⚠️ External_id gerado via ExternalIdManager (fallback):", externalId);
       } else {
         console.log("✅ External_id recebido do frontend (ExternalIdManager):", externalId);
@@ -541,51 +570,52 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // ✅ MÉTRICAS DE QUALIDADE AVANÇADAS
-    const qualityMetrics = {
+    console.log("✅ Evento enviado com sucesso para Meta CAPI:", {
       events_processed: enrichedData.length,
       duplicates_blocked: duplicatesBlocked,
-      deduplication_rate: Math.round((duplicatesBlocked / originalCount) * 100),
       processing_time_ms: responseTime,
       compression_used: shouldCompress,
       ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
       external_ids_sent: enrichedData.filter((e) => e.user_data.external_id).length,
-      external_id_coverage: Math.round((enrichedData.filter((e) => e.user_data.external_id).length / enrichedData.length) * 100),
       sha256_format_count: enrichedData.filter(
         (e) => e.user_data.external_id && e.user_data.external_id.length === 64
       ).length,
-      fbp_coverage: Math.round((enrichedData.filter((e) => e.user_data.fbp).length / enrichedData.length) * 100),
-      fbc_coverage: Math.round((enrichedData.filter((e) => e.user_data.fbc).length / enrichedData.length) * 100),
-      geo_coverage: Math.round((enrichedData.filter((e) => e.user_data.country).length / enrichedData.length) * 100),
-      cache_size: eventCache.size,
-      cache_efficiency: eventCache.size > 0 ? Math.round((duplicatesBlocked / eventCache.size) * 100) : 0
-    };
+    });
 
-    console.log("✅ Evento enviado com sucesso para Meta CAPI (OTIMIZADO):", qualityMetrics);
-
-    res.status(200).json({
-      ...data,
-      ip_info: { type: ip.includes(':') ? 'IPv6' : 'IPv4', address: ip },
-      deduplication_info: {
-        original_events: originalCount,
-        processed_events: enrichedData.length,
-        duplicates_blocked: duplicatesBlocked,
-        cache_size: eventCache.size,
+    return res.status(200).json({
+      success: true,
+      events_processed: enrichedData.length,
+      duplicates_blocked: duplicatesBlocked,
+      original_count: originalCount,
+      deduplication_rate: `${Math.round((duplicatesBlocked / originalCount) * 100)}%`,
+      processing_time_ms: responseTime,
+      ip_info: {
+        original: ip,
+        formatted: formattedIP,
+        type: ip.includes(':') ? 'IPv6' : 'IPv4',
       },
-      quality_metrics: qualityMetrics,
-      server_info: {
-        version: "8.2-OPTIMIZED",
-        timestamp: new Date().toISOString(),
-        processing_time_ms: responseTime
-      }
+      cache_size: eventCache.size,
     });
   } catch (error: any) {
-    console.error("❌ Erro no Proxy CAPI:", error);
-    if (error?.name === "AbortError") {
-      return res
-        .status(408)
-        .json({ error: "Timeout ao enviar evento para a Meta", timeout_ms: 15000 });
+    const responseTime = Date.now() - startTime;
+    
+    if (error.name === 'AbortError') {
+      console.error("⏰ Timeout na requisição para Meta CAPI (15s)");
+      return res.status(408).json({
+        error: "Timeout na requisição",
+        processing_time_ms: responseTime,
+      });
     }
-    res.status(500).json({ error: "Erro interno no servidor CAPI." });
+
+    console.error("❌ Erro interno no servidor CAPI:", {
+      error: error.message,
+      stack: error.stack,
+      processing_time_ms: responseTime,
+    });
+
+    return res.status(500).json({
+      error: "Erro interno do servidor",
+      processing_time_ms: responseTime,
+    });
   }
 }
