@@ -378,7 +378,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     
     // Segundo passo: filtrar duplicatas usando os event_ids
     const filteredData = eventsWithIds.filter((event: EventData) => {
-      return !isDuplicateEvent(event.event_id);
+      return event.event_id && !isDuplicateEvent(event.event_id);
     });
 
     const duplicatesBlocked = originalCount - filteredData.length;
