@@ -6,9 +6,52 @@
 // TTL otimizado para 6h para reduzir eventos fantasma
 // Cache aumentado para 50k eventos para melhor cobertura
 
-import type { NextApiRequest, NextApiResponse } from "next";
-import crypto from "crypto";
-import zlib from "zlib";
+import * as crypto from "crypto";
+import * as zlib from "zlib";
+
+// Tipos para requisição e resposta (compatível com Express/Node.js)
+interface UserData {
+  external_id?: string;
+  fbp?: string;
+  fbc?: string;
+  country?: string;
+  state?: string;
+  city?: string;
+  postal?: string;
+  [key: string]: unknown;
+}
+
+interface EventData {
+  event_id?: string;
+  event_name?: string;
+  event_time?: number | string;
+  event_source_url?: string;
+  action_source?: string;
+  session_id?: string;
+  user_data?: UserData;
+  custom_data?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+interface ApiRequest {
+  method?: string;
+  body?: {
+    data?: EventData[];
+    [key: string]: unknown;
+  };
+  headers: Record<string, string | string[] | undefined>;
+  socket?: {
+    remoteAddress?: string;
+  };
+  cookies?: Record<string, string>;
+}
+
+interface ApiResponse {
+  status(code: number): ApiResponse;
+  json(data: unknown): void;
+  end(): void;
+  setHeader(name: string, value: string): void;
+}
 
 const PIXEL_ID = "765087775987515";
 const ACCESS_TOKEN = "EAAQfmxkTTZCcBPHGbA2ojC29bVbNPa6GM3nxMxsZC29ijBmuyexVifaGnrjFZBZBS6LEkaR29X3tc5TWn4SHHffeXiPvexZAYKP5mTMoYGx5AoVYaluaqBTtiKIjWALxuMZAPVcBk1PuYCb0nJfhpzAezh018LU3cT45vuEflMicoQEHHk3H5YKNVAPaUZC6yzhcQZDZD";
@@ -49,9 +92,9 @@ function isDuplicateEvent(eventId: string): boolean {
     const itemsToRemove = Math.floor(MAX_CACHE_SIZE * 0.1);
     let removedCount = 0;
     
-    for (const [eventId] of eventCache) {
-      if (removedCount >= itemsToRemove) break;
-      eventCache.delete(eventId);
+    const eventIds = Array.from(eventCache.keys());
+    for (let i = 0; i < itemsToRemove && i < eventIds.length; i++) {
+      eventCache.delete(eventIds[i]);
       removedCount++;
     }
     
@@ -75,7 +118,7 @@ function hashSHA256(value: string): string {
 
 // ✅ IPv6 INTELIGENTE: Detecção e validação de IP com prioridade IPv6
 function getClientIP(
-  req: NextApiRequest
+  req: ApiRequest
 ): { ip: string; type: "IPv4" | "IPv6" | "unknown" } {
   const ipSources = [
     req.headers["cf-connecting-ip"],
@@ -192,7 +235,7 @@ function formatIPForMeta(ip: string): string {
   
   if (ipType === 'IPv6') {
     // Remove colchetes se presentes e garante formato limpo
-    let cleanIP = ip.replace(/^\[|\]$/g, '');
+    const cleanIP = ip.replace(/^\[|\]$/g, '');
     
     console.log('🌐 IPv6 formatado para Meta:', {
       original: ip,
@@ -273,7 +316,7 @@ function rateLimit(ip: string): boolean {
   return true;
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: ApiRequest, res: ApiResponse) {
   const startTime = Date.now();
 
   const { ip, type: ipType } = getClientIP(req);
@@ -317,7 +360,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // 🛡️ FILTRO DE DEDUPLICAÇÃO MELHORADO: Verificar duplicatas antes do processamento
     const originalCount = req.body.data.length;
     // ✅ CORRIGIDO: Priorizar event_id do frontend para consistência Pixel/CAPI
-    const eventsWithIds = req.body.data.map((event: any) => {
+    const eventsWithIds = req.body.data.map((event: EventData) => {
       if (!event.event_id) {
         // Gerar event_id determinístico apenas como fallback
         const eventName = event.event_name || "Lead";
@@ -334,7 +377,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
     
     // Segundo passo: filtrar duplicatas usando os event_ids
-    const filteredData = eventsWithIds.filter((event: any) => {
+    const filteredData = eventsWithIds.filter((event: EventData) => {
       return !isDuplicateEvent(event.event_id);
     });
 
@@ -358,14 +401,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // ✅ FORMATAÇÃO IPv6: Aplicar formatação otimizada para Meta CAPI
     const formattedIP = formatIPForMeta(ip);
 
-    const enrichedData = filteredData.map((event: any) => {
+    const enrichedData = filteredData.map((event: EventData) => {
       let externalId = event.user_data?.external_id || null;
 
       if (!externalId) {
         // ✅ CORRIGIDO: Usar EXATA lógica do DeduplicationEngine para consistência total
         let sessionId = event.session_id;
         if (!sessionId) {
-          const anyReq = req as any;
+          const anyReq = req as ApiRequest;
           if (anyReq.cookies && anyReq.cookies.session_id) {
             sessionId = anyReq.cookies.session_id;
           } else {
@@ -398,7 +441,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.log("✅ Event_id processado:", eventId);
       const actionSource = event.action_source || "website";
 
-      const customData: Record<string, any> = { ...(event.custom_data || {}) };
+      const customData: Record<string, unknown> = { ...(event.custom_data || {}) };
       if (eventName === "PageView") {
         delete customData.value;
         delete customData.currency;
@@ -408,7 +451,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         customData.currency = customData.currency || "BRL";
       }
 
-      const userData: any = {
+      const userData: Record<string, unknown> = {
         ...(externalId && { external_id: externalId }),
         client_ip_address: formattedIP,
         client_user_agent: userAgent,
@@ -488,7 +531,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       has_pii: false,
       external_ids_count: enrichedData.filter((e) => e.user_data.external_id).length,
       external_ids_from_frontend: enrichedData.filter(
-        (e) => e.user_data.external_id && e.user_data.external_id.length === 64
+        (e) => e.user_data.external_id && typeof e.user_data.external_id === 'string' && e.user_data.external_id.length === 64
       ).length,
       has_geo_data: enrichedData.some((e) => e.user_data.country || e.user_data.state || e.user_data.city),
       geo_locations: enrichedData
@@ -503,12 +546,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const response = await fetch(`${META_URL}?access_token=${ACCESS_TOKEN}`, {
       method: "POST",
       headers,
-      body: body as any,
+      body: body as BodyInit,
       signal: controller.signal,
     });
 
     clearTimeout(timeout);
-    const data = await response.json();
+    const data = await response.json() as Record<string, unknown>;
     const responseTime = Date.now() - startTime;
 
     if (!response.ok) {
@@ -516,57 +559,47 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         status: response.status,
         data,
         events: enrichedData.length,
-        response_time: responseTime,
-        cache_size: eventCache.size,
-      });
-      return res.status(response.status).json({
-        error: "Erro ao enviar eventos para Meta CAPI",
-        details: data,
-        events_processed: enrichedData.length,
+        ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
         duplicates_blocked: duplicatesBlocked,
-        cache_size: eventCache.size,
+      });
+
+      return res.status(response.status).json({
+        error: "Erro da Meta",
+        details: data,
+        processing_time_ms: responseTime,
       });
     }
 
-    console.log("✅ Eventos enviados com sucesso para Meta CAPI (DEDUPLICAÇÃO ATIVA):", {
-      events_sent: enrichedData.length,
-      original_events: originalCount,
+    console.log("✅ Evento enviado com sucesso para Meta CAPI:", {
+      events_processed: enrichedData.length,
       duplicates_blocked: duplicatesBlocked,
-      deduplication_efficiency: `${Math.round((duplicatesBlocked / originalCount) * 100)}%`,
-      response_time: `${responseTime}ms`,
-      meta_response: data,
+      processing_time_ms: responseTime,
+      compression_used: shouldCompress,
+      ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
+      external_ids_sent: enrichedData.filter((e) => e.user_data.external_id).length,
+      sha256_format_count: enrichedData.filter(
+        (e) => e.user_data.external_id && typeof e.user_data.external_id === 'string' && e.user_data.external_id.length === 64
+      ).length,
       cache_size: eventCache.size,
-      cache_ttl_hours: CACHE_TTL / (60 * 60 * 1000),
-      ipv6_optimized: ip.includes(':') ? 'Native IPv6' : 'IPv4→IPv6-mapped',
-      external_ids_consistency: "100% - DeduplicationEngine aligned",
     });
 
-    return res.status(200).json({
-      success: true,
-      events_sent: enrichedData.length,
-      original_events: originalCount,
-      duplicates_blocked: duplicatesBlocked,
-      deduplication_rate: `${Math.round((duplicatesBlocked / originalCount) * 100)}%`,
-      response_time: responseTime,
-      meta_response: data,
-      cache_size: eventCache.size,
-      external_ids_from_deduplication_engine: enrichedData.filter(
-        (e) => e.user_data.external_id && e.user_data.external_id.length === 64
-      ).length,
+    res.status(200).json({
+      ...data,
+      ip_info: { type: ip.includes(':') ? 'IPv6' : 'IPv4', address: ip },
+      deduplication_info: {
+        original_events: originalCount,
+        processed_events: enrichedData.length,
+        duplicates_blocked: duplicatesBlocked,
+        cache_size: eventCache.size,
+      },
     });
-  } catch (error: any) {
-    const responseTime = Date.now() - startTime;
-    console.error("❌ Erro interno na CAPI:", {
-      error: error.message,
-      stack: error.stack,
-      response_time: responseTime,
-      cache_size: eventCache.size,
-    });
-    return res.status(500).json({
-      error: "Erro interno do servidor",
-      message: error.message,
-      response_time: responseTime,
-      cache_size: eventCache.size,
-    });
+  } catch (error: unknown) {
+    console.error("❌ Erro no Proxy CAPI:", error);
+    if (error instanceof Error && error.name === "AbortError") {
+      return res
+        .status(408)
+        .json({ error: "Timeout ao enviar evento para a Meta", timeout_ms: 15000 });
+    }
+    res.status(500).json({ error: "Erro interno no servidor CAPI." });
   }
 }
