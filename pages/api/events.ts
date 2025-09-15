@@ -515,7 +515,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     };
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000); // Aumentado para 15s
+    const timeout = setTimeout(() => controller.abort(), 8000); // Otimizado para 8s (era 15s)
 
     console.log("🔄 Enviando evento para Meta CAPI (DEDUPLICAÇÃO CORRIGIDA):", {
       events: enrichedData.length,
@@ -598,7 +598,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (error instanceof Error && error.name === "AbortError") {
       return res
         .status(408)
-        .json({ error: "Timeout ao enviar evento para a Meta", timeout_ms: 15000 });
+        .json({ error: "Timeout ao enviar evento para a Meta", timeout_ms: 8000 });
     }
     res.status(500).json({ error: "Erro interno no servidor CAPI." });
   }
