@@ -1,11 +1,10 @@
-// ✅ DIGITAL PAISAGISMO CAPI V8.1 - DEDUPLICAÇÃO CORRIGIDA + RETRY INTELIGENTE
+// ✅ DIGITAL PAISAGISMO CAPI V8.1 - DEDUPLICAÇÃO CORRIGIDA
 // CORREÇÃO CRÍTICA: Event_id agora é consistente entre pixel e API
 // PROBLEMA IDENTIFICADO: Event_ids aleatórios impediam deduplicação correta
 // SOLUÇÃO: Event_ids determinísticos baseados em dados do evento
 // IMPORTANTE: Frontend deve enviar event_id único para cada evento
 // TTL otimizado para 6h para reduzir eventos fantasma
 // Cache aumentado para 50k eventos para melhor cobertura
-// 🔄 NOVO: Sistema de Retry Inteligente com backoff exponencial
 
 import * as crypto from "crypto";
 import * as zlib from "zlib";
@@ -515,6 +514,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       ...(shouldCompress ? { "Content-Encoding": "gzip" } : {}),
     };
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000); // Aumentado para 15s
+
     console.log("🔄 Enviando evento para Meta CAPI (DEDUPLICAÇÃO CORRIGIDA):", {
       events: enrichedData.length,
       original_events: originalCount,
@@ -541,91 +543,34 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       cache_ttl_hours: CACHE_TTL / (60 * 60 * 1000),
     });
 
-    // 🔄 SISTEMA DE RETRY INTELIGENTE
-    let response: Response;
-    let data: Record<string, unknown>;
-    let responseTime: number;
-    let lastError: any;
-    const maxRetries = 2; // Total de 3 tentativas (1 inicial + 2 retries)
-    
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        const attemptStartTime = Date.now();
-        
-        // Backoff exponencial: 0ms, 1000ms, 2000ms
-        if (attempt > 0) {
-          const delay = attempt * 1000;
-          console.log(`🔄 Retry ${attempt}/${maxRetries} após ${delay}ms...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
+    const response = await fetch(`${META_URL}?access_token=${ACCESS_TOKEN}`, {
+      method: "POST",
+      headers,
+      body: body as BodyInit,
+      signal: controller.signal,
+    });
 
-        // Reset do timeout para cada tentativa
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000);
+    clearTimeout(timeout);
+    const data = await response.json() as Record<string, unknown>;
+    const responseTime = Date.now() - startTime;
 
-        response = await fetch(`${META_URL}?access_token=${ACCESS_TOKEN}`, {
-          method: "POST",
-          headers,
-          body: body as BodyInit,
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeout);
-        data = await response.json() as Record<string, unknown>;
-        responseTime = Date.now() - startTime;
-
-        // ✅ Sucesso - sair do loop
-        if (response.ok) {
-          if (attempt > 0) {
-            console.log(`✅ Sucesso no retry ${attempt}/${maxRetries}!`);
-          }
-          break;
-        }
-
-        // ❌ Erro 4xx = não retry (erro do cliente)
-        if (response.status >= 400 && response.status < 500) {
-          console.error(`❌ Erro 4xx (${response.status}) - não fará retry:`, data);
-          break;
-        }
-
-        // ❌ Erro 5xx = retry (erro do servidor)
-        lastError = { status: response.status, data };
-        console.warn(`⚠️ Erro ${response.status} - tentativa ${attempt + 1}/${maxRetries + 1}:`, data);
-
-      } catch (error) {
-        lastError = error;
-        responseTime = Date.now() - startTime;
-        
-        // Erro de rede/timeout = retry
-        console.warn(`⚠️ Erro de rede - tentativa ${attempt + 1}/${maxRetries + 1}:`, error);
-        
-        // Se é a última tentativa, sair do loop
-        if (attempt === maxRetries) {
-          break;
-        }
-      }
-    }
-
-    // Verificar se ainda há erro após todas as tentativas
-    if (!response! || !response.ok) {
-      console.error("❌ Falha após todas as tentativas:", {
-        final_status: response?.status || 'network_error',
-        final_error: lastError,
+    if (!response.ok) {
+      console.error("❌ Erro da Meta CAPI:", {
+        status: response.status,
+        data,
         events: enrichedData.length,
         ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
         duplicates_blocked: duplicatesBlocked,
-        total_attempts: maxRetries + 1,
       });
 
-      return res.status(response?.status || 500).json({
-        error: "Erro da Meta após retries",
-        details: lastError,
-        processing_time_ms: responseTime!,
-        attempts_made: maxRetries + 1,
+      return res.status(response.status).json({
+        error: "Erro da Meta",
+        details: data,
+        processing_time_ms: responseTime,
       });
     }
 
-    console.log("✅ Evento enviado com sucesso para Meta CAPI (RETRY INTELIGENTE):", {
+    console.log("✅ Evento enviado com sucesso para Meta CAPI:", {
       events_processed: enrichedData.length,
       duplicates_blocked: duplicatesBlocked,
       processing_time_ms: responseTime,
@@ -636,12 +581,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         (e) => e.user_data.external_id && typeof e.user_data.external_id === 'string' && e.user_data.external_id.length === 64
       ).length,
       cache_size: eventCache.size,
-      // 🔄 LOGS DO SISTEMA DE RETRY
-      retry_system_enabled: true,
-      max_retries_configured: maxRetries,
-      success_on_first_attempt: !lastError,
-      total_attempts_made: lastError ? 'retry_used' : 1,
-      retry_performance: lastError ? 'recovered_from_failure' : 'no_retry_needed',
     });
 
     res.status(200).json({
