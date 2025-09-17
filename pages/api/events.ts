@@ -1,10 +1,13 @@
-// ✅ DIGITAL PAISAGISMO CAPI V8.1 - DEDUPLICAÇÃO CORRIGIDA
+// ✅ DIGITAL PAISAGISMO CAPI V8.2 + HOTMART - DEDUPLICAÇÃO CORRIGIDA
 // CORREÇÃO CRÍTICA: Event_id agora é consistente entre pixel e API
 // PROBLEMA IDENTIFICADO: Event_ids aleatórios impediam deduplicação correta
 // SOLUÇÃO: Event_ids determinísticos baseados em dados do evento
 // IMPORTANTE: Frontend deve enviar event_id único para cada evento
 // TTL otimizado para 6h para reduzir eventos fantasma
 // Cache aumentado para 50k eventos para melhor cobertura
+// 🆕 INTEGRAÇÃO HOTMART: Webhooks automáticos para eventos PURCHASE_APPROVED
+// 🆕 TRANSFORMAÇÃO AUTOMÁTICA: Hotmart → Meta CAPI com deduplicação
+// 🆕 DETECÇÃO INTELIGENTE: Frontend vs Hotmart (dual-source support)
 
 import * as crypto from "crypto";
 import * as zlib from "zlib";
@@ -33,12 +36,48 @@ interface EventData {
   [key: string]: unknown;
 }
 
+// ==================== INTERFACES HOTMART (ADICIONADAS) ====================
+interface HotmartPurchaser {
+  email: string;
+  phone?: string;
+  name?: string;
+  document?: string;
+}
+
+interface HotmartProduct {
+  id: number;
+  name: string;
+  ucode?: string;
+}
+
+interface HotmartTransaction {
+  id: string;
+  value: number;
+  currency: string;
+  status: string;
+  payment_type?: string;
+}
+
+interface HotmartWebhookData {
+  product: HotmartProduct;
+  purchaser: HotmartPurchaser;
+  transaction: HotmartTransaction;
+}
+
+interface HotmartWebhookPayload {
+  id: string;
+  creation_date: number;
+  event: string;
+  version: string;
+  data: HotmartWebhookData;
+}
+
 interface ApiRequest {
   method?: string;
   body?: {
     data?: EventData[];
     [key: string]: unknown;
-  };
+  } | HotmartWebhookPayload;
   headers: Record<string, string | string[] | undefined>;
   socket?: {
     remoteAddress?: string;
@@ -310,22 +349,72 @@ function processFbc(fbc: string): string | null {
 }
 
 const RATE_LIMIT = 100; // Aumentado para suportar picos de tráfego
+const RATE_LIMIT_WINDOW = 60000; // 1 minuto
+const RATE_LIMIT_MAX_REQUESTS = 100;
 const rateLimitMap = new Map<string, number[]>();
 
-function rateLimit(ip: string): boolean {
+// Rate limiting
+const rateLimit = (ip: string): boolean => {
   const now = Date.now();
-  const windowMs = 60000;
-  if (!rateLimitMap.has(ip)) rateLimitMap.set(ip, []);
-  const timestamps = (rateLimitMap.get(ip) || []).filter((t) => now - t < windowMs);
-  if (timestamps.length >= RATE_LIMIT) return false;
-  timestamps.push(now);
-  rateLimitMap.set(ip, timestamps);
-  if (rateLimitMap.size > 1000) {
-    const oldest = rateLimitMap.keys().next();
-    if (!oldest.done) rateLimitMap.delete(oldest.value);
+  const windowStart = now - RATE_LIMIT_WINDOW;
+  
+  if (!rateLimitMap.has(ip)) {
+    rateLimitMap.set(ip, []);
   }
+  
+  const requests = rateLimitMap.get(ip)!;
+  
+  // Remove old requests outside the window
+  const validRequests = requests.filter(time => time > windowStart);
+  
+  if (validRequests.length >= RATE_LIMIT_MAX_REQUESTS) {
+    return false; // Rate limit exceeded
+  }
+  
+  validRequests.push(now);
+  rateLimitMap.set(ip, validRequests);
+  
   return true;
-}
+};
+
+// ==================== FUNÇÕES HOTMART (ADICIONADAS) ====================
+// Detecta se é webhook Hotmart
+const isHotmartWebhook = (body: any): body is HotmartWebhookPayload => {
+  return body && 
+         typeof body.id === 'string' &&
+         typeof body.event === 'string' &&
+         typeof body.version === 'string' &&
+         body.data &&
+         body.data.product &&
+         body.data.purchaser &&
+         body.data.transaction;
+};
+
+// Transforma dados Hotmart para formato Meta CAPI
+const transformHotmartToMeta = (hotmartData: HotmartWebhookData): EventData => {
+  const { purchaser, product, transaction } = hotmartData;
+  
+  return {
+    event_name: 'Purchase',
+    event_time: Math.floor(Date.now() / 1000),
+    action_source: 'website',
+    user_data: {
+      em: [hashSHA256(purchaser.email.toLowerCase().trim())],
+      ph: purchaser.phone ? [hashSHA256(purchaser.phone.replace(/\D/g, ''))] : undefined,
+      fn: purchaser.name ? [hashSHA256(purchaser.name.toLowerCase().trim())] : undefined,
+    },
+    custom_data: {
+      currency: transaction.currency || 'BRL',
+      value: transaction.value,
+      content_name: product.name,
+      content_ids: [product.id.toString()],
+      content_type: 'product',
+      num_items: 1,
+    },
+    event_source_url: 'https://hotmart.com',
+    event_id: `hotmart_${transaction.id}_${Date.now()}`,
+  };
+};
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   const startTime = Date.now();
@@ -338,9 +427,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     "https://www.digitalpaisagismo.com",
     "https://digitalpaisagismo.com",
     "https://cap.digitalpaisagismo.com",
-    "https://www.consultoria.digitalpaisagismo.com",
+    "https://atendimento.digitalpaisagismo.com",
     "https://consultoria.digitalpaisagismo.com",
+    "https://www.consultoria.digitalpaisagismo.com",
     "https://cap.consultoria.digitalpaisagismo.com",
+    "https://projeto.digitalpaisagismo.com",
     "https://www.projeto.digitalpaisagismo.com",
     "http://localhost:3000",
     "http://localhost:8080",
@@ -365,6 +456,85 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (!rateLimit(ip)) return res.status(429).json({ error: "Limite de requisições excedido", retry_after: 60 });
 
   try {
+    // ==================== PROCESSAMENTO HOTMART (ADICIONADO) ====================
+    // Verifica se é webhook Hotmart
+    if (isHotmartWebhook(req.body)) {
+      console.log(`[HOTMART] Webhook recebido: ${req.body.event}`);
+      
+      // Processa apenas eventos de compra aprovada
+      if (req.body.event === 'PURCHASE_APPROVED') {
+        try {
+          const metaEvent = transformHotmartToMeta(req.body.data);
+          
+          // Verifica duplicação
+          if (isDuplicateEvent(metaEvent.event_id!)) {
+            console.log(`[HOTMART] Evento duplicado ignorado: ${metaEvent.event_id}`);
+            return res.status(200).json({ 
+              success: true, 
+              message: 'Evento duplicado ignorado',
+              source: 'hotmart'
+            });
+          }
+
+          // Processa o evento
+          const payload = {
+            data: [metaEvent],
+            test_event_code: undefined
+          };
+
+          const compressedData = zlib.gzipSync(JSON.stringify(payload));
+          
+          const response = await fetch(META_URL, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${ACCESS_TOKEN}`,
+              'Content-Type': 'application/json',
+              'Content-Encoding': 'gzip',
+            },
+            body: compressedData,
+          });
+
+          const result = await response.json();
+          
+          if (response.ok) {
+            console.log(`[HOTMART] ✅ Evento enviado com sucesso:`, {
+              event_id: metaEvent.event_id,
+              product: req.body.data.product.name,
+              value: req.body.data.transaction.value,
+              currency: req.body.data.transaction.currency
+            });
+            
+            return res.status(200).json({ 
+              success: true, 
+              message: 'Evento Hotmart processado com sucesso',
+              source: 'hotmart',
+              event_id: metaEvent.event_id
+            });
+          } else {
+            console.error(`[HOTMART] ❌ Erro ao enviar evento:`, result);
+            return res.status(500).json({ 
+              error: 'Erro ao processar evento Hotmart',
+              details: result
+            });
+          }
+        } catch (error) {
+          console.error(`[HOTMART] ❌ Erro no processamento:`, error);
+          return res.status(500).json({ 
+            error: 'Erro interno no processamento Hotmart',
+            message: error instanceof Error ? error.message : 'Erro desconhecido'
+          });
+        }
+      } else {
+        console.log(`[HOTMART] Evento ignorado: ${req.body.event}`);
+        return res.status(200).json({ 
+          success: true, 
+          message: `Evento ${req.body.event} ignorado`,
+          source: 'hotmart'
+        });
+      }
+    }
+
+    // ==================== PROCESSAMENTO FRONTEND (ORIGINAL) ====================
     if (!req.body?.data || !Array.isArray(req.body.data)) {
       return res.status(400).json({ error: "Payload inválido - campo 'data' obrigatório" });
     }
@@ -528,6 +698,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const body = shouldCompress ? zlib.gzipSync(jsonPayload) : jsonPayload;
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      Authorization: `Bearer ${ACCESS_TOKEN}`,
       Connection: "keep-alive",
       "User-Agent": "DigitalPaisagismo-CAPI-Proxy/1.0",
       ...(shouldCompress ? { "Content-Encoding": "gzip" } : {}),
