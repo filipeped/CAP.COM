@@ -19,6 +19,104 @@
 import * as crypto from "crypto";
 import * as zlib from "zlib";
 
+// ==================== SISTEMA DE GEOLOCALIZAÇÃO AUTOMÁTICA ====================
+interface GeoLocation {
+  country?: string;
+  state?: string;
+  city?: string;
+  postal?: string;
+}
+
+// Cache de geolocalização para evitar múltiplas consultas do mesmo IP
+const geoCache = new Map<string, { data: GeoLocation; timestamp: number }>();
+const GEO_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 horas
+
+async function getGeoLocationFromIP(ip: string): Promise<GeoLocation> {
+  // Verificar cache primeiro
+  const cached = geoCache.get(ip);
+  if (cached && Date.now() - cached.timestamp < GEO_CACHE_TTL) {
+    console.log("🌍 Geolocalização obtida do cache:", { ip, ...cached.data });
+    return cached.data;
+  }
+
+  try {
+    // Usar ipapi.co - serviço gratuito e confiável para geolocalização
+    const response = await fetch(`https://ipapi.co/${ip}/json/`, {
+      headers: {
+        'User-Agent': 'DigitalPaisagismo-CAPI/8.7-GeoEnrichment'
+      },
+      signal: AbortSignal.timeout(5000) // Timeout de 5 segundos
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    // Verificar se a resposta contém dados válidos
+    if (data.error || !data.country_code) {
+      throw new Error(data.reason || 'Dados inválidos');
+    }
+
+    const geoData: GeoLocation = {
+      country: data.country_code?.toLowerCase() || undefined,
+      state: data.region?.toLowerCase() || undefined,
+      city: data.city?.toLowerCase() || undefined,
+      postal: data.postal || undefined
+    };
+
+    // Armazenar no cache
+    geoCache.set(ip, { data: geoData, timestamp: Date.now() });
+    
+    // Limpar cache antigo periodicamente
+    if (geoCache.size > 1000) {
+      const now = Date.now();
+      let cleanedCount = 0;
+      geoCache.forEach((value, key) => {
+        if (now - value.timestamp > GEO_CACHE_TTL) {
+          geoCache.delete(key);
+          cleanedCount++;
+        }
+      });
+      console.log(`🧹 Cache de geolocalização limpo: ${cleanedCount} entradas removidas`);
+    }
+
+    console.log("🌍 Geolocalização obtida da API:", { ip, ...geoData });
+    return geoData;
+
+  } catch (error) {
+    console.warn("⚠️ Erro ao obter geolocalização:", { ip, error: error instanceof Error ? error.message : error });
+    
+    // Fallback: tentar detectar país pelo IP (básico)
+    const fallbackGeo = getFallbackGeoFromIP(ip);
+    if (fallbackGeo.country) {
+      geoCache.set(ip, { data: fallbackGeo, timestamp: Date.now() });
+      console.log("🌍 Geolocalização fallback aplicada:", { ip, ...fallbackGeo });
+      return fallbackGeo;
+    }
+
+    return {};
+  }
+}
+
+function getFallbackGeoFromIP(ip: string): GeoLocation {
+  // Detectar país básico por faixas de IP conhecidas (muito limitado, mas melhor que nada)
+  if (!ip || ip === 'unknown') return {};
+  
+  // Para IPs brasileiros conhecidos (exemplo básico)
+  if (ip.startsWith('177.') || ip.startsWith('189.') || ip.startsWith('201.')) {
+    return { country: 'br' };
+  }
+  
+  // Para IPs americanos conhecidos
+  if (ip.startsWith('192.') || ip.startsWith('198.') || ip.startsWith('199.')) {
+    return { country: 'us' };
+  }
+  
+  return {};
+}
+
 // Tipos para requisição e resposta (compatível com Express/Node.js)
 interface UserData {
   external_id?: string;
@@ -575,6 +673,20 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     // ✅ FORMATAÇÃO IPv6: Aplicar formatação otimizada para Meta CAPI
     const formattedIP = formatIPForMeta(ip);
 
+    // ✅ GEOLOCALIZAÇÃO AUTOMÁTICA: Obter dados geográficos por IP para TODOS os eventos
+    let autoGeoData: GeoLocation = {};
+    try {
+      // Só fazer a consulta se o IP for válido e não for privado
+      if (ip && ip !== 'unknown' && !ip.startsWith('127.') && !ip.startsWith('192.168.') && !ip.startsWith('10.')) {
+        autoGeoData = await getGeoLocationFromIP(ip);
+        console.log("🌍 Geolocalização automática obtida:", { ip, ...autoGeoData });
+      } else {
+        console.log("⚠️ IP privado/inválido, pulando geolocalização:", ip);
+      }
+    } catch (error) {
+      console.warn("⚠️ Erro na geolocalização automática:", error);
+    }
+
     const enrichedData = filteredData.map((event: EventData) => {
       let externalId = event.user_data?.external_id || null;
 
@@ -656,22 +768,64 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         }
       }
 
-      if (typeof event.user_data?.country === "string" && event.user_data.country.trim()) {
-          userData.country = hashSHA256(event.user_data.country.toLowerCase().trim());
-          console.log("🌍 Country hasheado (SHA256):", userData.country);
-        }
-        if (typeof event.user_data?.state === "string" && event.user_data.state.trim()) {
-          userData.st = hashSHA256(event.user_data.state.toLowerCase().trim());
-          console.log("🌍 State hasheado (SHA256):", userData.st);
-        }
-        if (typeof event.user_data?.city === "string" && event.user_data.city.trim()) {
-          userData.ct = hashSHA256(event.user_data.city.toLowerCase().trim());
-          console.log("🌍 City hasheado (SHA256):", userData.ct);
-        }
-        if (typeof event.user_data?.postal === "string" && event.user_data.postal.trim()) {
-          userData.zp = hashSHA256(event.user_data.postal.trim());
-          console.log("🌍 Postal Code hasheado (SHA256):", userData.zp);
-        }
+      // ✅ SISTEMA DE PRIORIDADE GEOGRÁFICA: Manual > Automático
+      // Prioridade 1: Dados manuais do frontend (se existirem)
+      let finalCountry = event.user_data?.country?.trim();
+      let finalState = event.user_data?.state?.trim();
+      let finalCity = event.user_data?.city?.trim();
+      let finalPostal = event.user_data?.postal?.trim();
+
+      // Prioridade 2: Dados automáticos por IP (se não houver dados manuais)
+      if (!finalCountry && autoGeoData.country) {
+        finalCountry = autoGeoData.country;
+        console.log("🌍 Country automático aplicado:", finalCountry);
+      }
+      if (!finalState && autoGeoData.state) {
+        finalState = autoGeoData.state;
+        console.log("🌍 State automático aplicado:", finalState);
+      }
+      if (!finalCity && autoGeoData.city) {
+        finalCity = autoGeoData.city;
+        console.log("🌍 City automático aplicado:", finalCity);
+      }
+      if (!finalPostal && autoGeoData.postal) {
+        finalPostal = autoGeoData.postal;
+        console.log("🌍 Postal automático aplicado:", finalPostal);
+      }
+
+      // Aplicar hash SHA256 nos dados finais (conforme exigência Meta CAPI)
+      if (finalCountry) {
+        userData.country = hashSHA256(finalCountry.toLowerCase());
+        console.log("🌍 Country final hasheado (SHA256):", { 
+          source: event.user_data?.country ? 'manual' : 'auto',
+          original: finalCountry,
+          hashed: userData.country 
+        });
+      }
+      if (finalState) {
+        userData.st = hashSHA256(finalState.toLowerCase());
+        console.log("🌍 State final hasheado (SHA256):", { 
+          source: event.user_data?.state ? 'manual' : 'auto',
+          original: finalState,
+          hashed: userData.st 
+        });
+      }
+      if (finalCity) {
+        userData.ct = hashSHA256(finalCity.toLowerCase());
+        console.log("🌍 City final hasheado (SHA256):", { 
+          source: event.user_data?.city ? 'manual' : 'auto',
+          original: finalCity,
+          hashed: userData.ct 
+        });
+      }
+      if (finalPostal) {
+        userData.zp = hashSHA256(finalPostal);
+        console.log("🌍 Postal final hasheado (SHA256):", { 
+          source: event.user_data?.postal ? 'manual' : 'auto',
+          original: finalPostal,
+          hashed: userData.zp 
+        });
+      }
 
       return {
         event_name: eventName,
@@ -698,7 +852,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000); // Aumentado para 15s
 
-    console.log("🔄 Enviando evento para Meta CAPI (DEDUPLICAÇÃO CORRIGIDA):", {
+    console.log("🔄 Enviando evento para Meta CAPI (GEOLOCALIZAÇÃO AUTOMÁTICA ATIVA):", {
       events: enrichedData.length,
       original_events: originalCount,
       duplicates_blocked: duplicatesBlocked,
@@ -714,14 +868,25 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       external_ids_from_frontend: enrichedData.filter(
         (e) => e.user_data.external_id && typeof e.user_data.external_id === 'string' && e.user_data.external_id.length === 64
       ).length,
-      has_geo_data: enrichedData.some((e) => e.user_data.country || e.user_data.state || e.user_data.city),
+      // ✅ NOVA INFORMAÇÃO: Estatísticas de geolocalização
+      geo_enrichment: {
+        auto_geo_available: Object.keys(autoGeoData).length > 0,
+        auto_geo_data: autoGeoData,
+        events_with_geo: enrichedData.filter((e) => e.user_data.country || e.user_data.st || e.user_data.ct).length,
+        events_with_country: enrichedData.filter((e) => e.user_data.country).length,
+        events_with_state: enrichedData.filter((e) => e.user_data.st).length,
+        events_with_city: enrichedData.filter((e) => e.user_data.ct).length,
+        geo_coverage_rate: `${Math.round((enrichedData.filter((e) => e.user_data.country).length / enrichedData.length) * 100)}%`
+      },
+      has_geo_data: enrichedData.some((e) => e.user_data.country || e.user_data.st || e.user_data.ct),
       geo_locations: enrichedData
         .filter((e) => e.user_data.country)
-        .map((e) => `${e.user_data.country}/${e.user_data.state}/${e.user_data.city}`)
+        .map((e) => `${e.user_data.country}/${e.user_data.st}/${e.user_data.ct}`)
         .slice(0, 3),
       fbc_processed: enrichedData.filter((e) => e.user_data.fbc).length,
       cache_size: eventCache.size,
       cache_ttl_hours: CACHE_TTL / (60 * 60 * 1000),
+      geo_cache_size: geoCache.size,
     });
 
     const response = await fetch(`${META_URL}?access_token=${ACCESS_TOKEN}`, {
