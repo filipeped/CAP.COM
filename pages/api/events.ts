@@ -1,13 +1,12 @@
-// ✅ DIGITAL PAISAGISMO CAPI V8.2 + HOTMART - DEDUPLICAÇÃO CORRIGIDA
+// ✅ DIGITAL PAISAGISMO CAPI V8.3 - INTEGRAÇÃO HOTMART CORRIGIDA
 // CORREÇÃO CRÍTICA: Event_id agora é consistente entre pixel e API
 // PROBLEMA IDENTIFICADO: Event_ids aleatórios impediam deduplicação correta
 // SOLUÇÃO: Event_ids determinísticos baseados em dados do evento
 // IMPORTANTE: Frontend deve enviar event_id único para cada evento
 // TTL otimizado para 6h para reduzir eventos fantasma
 // Cache aumentado para 50k eventos para melhor cobertura
-// 🆕 INTEGRAÇÃO HOTMART: Webhooks automáticos para eventos PURCHASE_APPROVED
-// 🆕 TRANSFORMAÇÃO AUTOMÁTICA: Hotmart → Meta CAPI com deduplicação
-// 🆕 DETECÇÃO INTELIGENTE: Frontend vs Hotmart (dual-source support)
+// ✅ HOTMART: Corrigido purchaser → buyer, transaction → purchase
+// ✅ HOTMART: Webhook processamento completo com transformação para Meta CAPI
 
 import * as crypto from "crypto";
 import * as zlib from "zlib";
@@ -36,32 +35,32 @@ interface EventData {
   [key: string]: unknown;
 }
 
-// ==================== INTERFACES HOTMART (ADICIONADAS) ====================
-interface HotmartPurchaser {
-  email: string;
-  phone?: string;
-  name?: string;
-  document?: string;
-}
-
+// ==================== INTERFACES HOTMART (CORRIGIDAS) ====================
 interface HotmartProduct {
   id: number;
   name: string;
   ucode?: string;
 }
 
-interface HotmartTransaction {
-  id: string;
-  value: number;
-  currency: string;
-  status: string;
-  payment_type?: string;
-}
-
 interface HotmartWebhookData {
   product: HotmartProduct;
-  purchaser: HotmartPurchaser;
-  transaction: HotmartTransaction;
+  buyer: {
+    email: string;
+    name?: string;
+    checkout_phone?: string;
+    document?: string;
+    address?: {
+      city?: string;
+      country_iso?: string;
+      state?: string;
+      zipcode?: string;
+    };
+  };
+  purchase: {
+    transaction: string;
+    price: { value: number; currency_value: string };
+    status: string;
+  };
 }
 
 interface HotmartWebhookPayload {
@@ -71,6 +70,35 @@ interface HotmartWebhookPayload {
   version: string;
   data: HotmartWebhookData;
 }
+
+const transformHotmartToMeta = (hotmartData: HotmartWebhookData): EventData => {
+  const { buyer, product, purchase } = hotmartData;
+
+  return {
+    event_name: "Purchase",
+    event_time: Math.floor(Date.now() / 1000),
+    action_source: "website",
+    user_data: {
+      em: [hashSHA256(buyer.email.toLowerCase().trim())],
+      ph: buyer.checkout_phone ? [hashSHA256(buyer.checkout_phone.replace(/\D/g, ""))] : undefined,
+      fn: buyer.name ? [hashSHA256(buyer.name.toLowerCase().trim())] : undefined,
+      ct: buyer.address?.city ? [hashSHA256(buyer.address.city.toLowerCase().trim())] : undefined,
+      st: buyer.address?.state ? [hashSHA256(buyer.address.state.toLowerCase().trim())] : undefined,
+      zp: buyer.address?.zipcode ? [hashSHA256(buyer.address.zipcode)] : undefined,
+      country: buyer.address?.country_iso?.toLowerCase(),
+    },
+    custom_data: {
+      currency: purchase.price.currency_value,
+      value: purchase.price.value,
+      content_name: product.name,
+      content_ids: [product.id.toString()],
+      content_type: "product",
+      order_id: purchase.transaction,
+    },
+    event_source_url: "https://hotmart.com",
+    event_id: `hotmart_${purchase.transaction}_${Date.now()}`,
+  };
+};
 
 interface ApiRequest {
   method?: string;
@@ -349,71 +377,32 @@ function processFbc(fbc: string): string | null {
 }
 
 const RATE_LIMIT = 100; // Aumentado para suportar picos de tráfego
-const RATE_LIMIT_WINDOW = 60000; // 1 minuto
-const RATE_LIMIT_MAX_REQUESTS = 100;
 const rateLimitMap = new Map<string, number[]>();
 
-// Rate limiting
-const rateLimit = (ip: string): boolean => {
+function rateLimit(ip: string): boolean {
   const now = Date.now();
-  const windowStart = now - RATE_LIMIT_WINDOW;
-  
-  if (!rateLimitMap.has(ip)) {
-    rateLimitMap.set(ip, []);
+  const windowMs = 60000;
+  if (!rateLimitMap.has(ip)) rateLimitMap.set(ip, []);
+  const timestamps = (rateLimitMap.get(ip) || []).filter((t) => now - t < windowMs);
+  if (timestamps.length >= RATE_LIMIT) return false;
+  timestamps.push(now);
+  rateLimitMap.set(ip, timestamps);
+  if (rateLimitMap.size > 1000) {
+    const oldest = rateLimitMap.keys().next();
+    if (!oldest.done) rateLimitMap.delete(oldest.value);
   }
-  
-  const requests = rateLimitMap.get(ip)!;
-  
-  // Remove old requests outside the window
-  const validRequests = requests.filter(time => time > windowStart);
-  
-  if (validRequests.length >= RATE_LIMIT_MAX_REQUESTS) {
-    return false; // Rate limit exceeded
-  }
-  
-  validRequests.push(now);
-  rateLimitMap.set(ip, validRequests);
-  
   return true;
-};
+}
 
-// ==================== FUNÇÕES HOTMART (ADICIONADAS) ====================
-// Detecta se é webhook Hotmart
+// ==================== FUNÇÕES HOTMART (CORRIGIDAS) ====================
 const isHotmartWebhook = (body: any): body is HotmartWebhookPayload => {
   return body && 
-         typeof body.id === 'string' &&
-         typeof body.event === 'string' &&
-         typeof body.version === 'string' &&
-         body.data &&
-         body.data.product &&
-         body.data.purchaser &&
-         body.data.transaction;
-};
-
-// Transforma dados Hotmart para formato Meta CAPI
-const transformHotmartToMeta = (hotmartData: HotmartWebhookData): EventData => {
-  const { purchaser, product, transaction } = hotmartData;
-  
-  return {
-    event_name: 'Purchase',
-    event_time: Math.floor(Date.now() / 1000),
-    action_source: 'website',
-    user_data: {
-      em: [hashSHA256(purchaser.email.toLowerCase().trim())],
-      ph: purchaser.phone ? [hashSHA256(purchaser.phone.replace(/\D/g, ''))] : undefined,
-      fn: purchaser.name ? [hashSHA256(purchaser.name.toLowerCase().trim())] : undefined,
-    },
-    custom_data: {
-      currency: transaction.currency || 'BRL',
-      value: transaction.value,
-      content_name: product.name,
-      content_ids: [product.id.toString()],
-      content_type: 'product',
-      num_items: 1,
-    },
-    event_source_url: 'https://hotmart.com',
-    event_id: `hotmart_${transaction.id}_${Date.now()}`,
-  };
+    typeof body.id === "string" && 
+    typeof body.event === "string" && 
+    body.data && 
+    body.data.product && 
+    body.data.buyer && 
+    body.data.purchase;
 };
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
@@ -456,81 +445,65 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (!rateLimit(ip)) return res.status(429).json({ error: "Limite de requisições excedido", retry_after: 60 });
 
   try {
-    // ==================== PROCESSAMENTO HOTMART (ADICIONADO) ====================
-    // Verifica se é webhook Hotmart
+    // ==================== PROCESSAMENTO HOTMART (CORRIGIDO) ====================
     if (isHotmartWebhook(req.body)) {
-      console.log(`[HOTMART] Webhook recebido: ${req.body.event}`);
+      console.log("🔥 Webhook Hotmart detectado:", { event: req.body.event, id: req.body.id });
       
-      // Processa apenas eventos de compra aprovada
-      if (req.body.event === 'PURCHASE_APPROVED') {
-        try {
-          const metaEvent = transformHotmartToMeta(req.body.data);
-          
-          // Verifica duplicação
-          if (isDuplicateEvent(metaEvent.event_id!)) {
-            console.log(`[HOTMART] Evento duplicado ignorado: ${metaEvent.event_id}`);
-            return res.status(200).json({ 
-              success: true, 
-              message: 'Evento duplicado ignorado',
-              source: 'hotmart'
-            });
-          }
+      if (req.body.event === "PURCHASE_APPROVED") {
+        const transformedEvent = transformHotmartToMeta(req.body.data);
+        
+        // Verificar duplicata
+        if (isDuplicateEvent(transformedEvent.event_id!)) {
+          console.log("⚠️ Evento Hotmart duplicado ignorado:", transformedEvent.event_id);
+          return res.status(200).json({ status: "duplicate_ignored", event_id: transformedEvent.event_id });
+        }
 
-          // Processa o evento
-          const payload = {
-            data: [metaEvent],
-            test_event_code: undefined
-          };
+        // Preparar payload para Meta CAPI
+        const payload = {
+          data: [transformedEvent],
+          access_token: ACCESS_TOKEN,
+        };
 
-          const compressedData = zlib.gzipSync(JSON.stringify(payload));
-          
-          const response = await fetch(META_URL, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${ACCESS_TOKEN}`,
-              'Content-Type': 'application/json',
-              'Content-Encoding': 'gzip',
-            },
-            body: compressedData,
-          });
+        const payloadString = JSON.stringify(payload);
+        const shouldCompress = payloadString.length > 2048;
+        const finalPayload = shouldCompress ? zlib.gzipSync(payloadString) : payloadString;
 
-          const result = await response.json();
-          
-          if (response.ok) {
-            console.log(`[HOTMART] ✅ Evento enviado com sucesso:`, {
-              event_id: metaEvent.event_id,
-              product: req.body.data.product.name,
-              value: req.body.data.transaction.value,
-              currency: req.body.data.transaction.currency
-            });
-            
-            return res.status(200).json({ 
-              success: true, 
-              message: 'Evento Hotmart processado com sucesso',
-              source: 'hotmart',
-              event_id: metaEvent.event_id
-            });
-          } else {
-            console.error(`[HOTMART] ❌ Erro ao enviar evento:`, result);
-            return res.status(500).json({ 
-              error: 'Erro ao processar evento Hotmart',
-              details: result
-            });
-          }
-        } catch (error) {
-          console.error(`[HOTMART] ❌ Erro no processamento:`, error);
-          return res.status(500).json({ 
-            error: 'Erro interno no processamento Hotmart',
-            message: error instanceof Error ? error.message : 'Erro desconhecido'
-          });
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "User-Agent": "DigitalPaisagismo-CAPI/8.3-Hotmart",
+        };
+
+        if (shouldCompress) {
+          headers["Content-Encoding"] = "gzip";
+        }
+
+        console.log("📤 Enviando evento Hotmart para Meta CAPI:", {
+          event_id: transformedEvent.event_id,
+          buyer_email: req.body.data.buyer.email,
+          transaction: req.body.data.purchase.transaction,
+          value: req.body.data.purchase.price.value,
+          currency: req.body.data.purchase.price.currency_value,
+        });
+
+        const response = await fetch(META_URL, {
+          method: "POST",
+          headers,
+          body: finalPayload,
+          signal: AbortSignal.timeout(15000),
+        });
+
+        const responseData = await response.json();
+
+        if (response.ok) {
+          console.log("✅ Evento Hotmart enviado com sucesso para Meta CAPI");
+          return res.status(200).json({ status: "success", meta_response: responseData });
+        } else {
+          console.error("❌ Erro ao enviar evento Hotmart para Meta CAPI:", responseData);
+          return res.status(500).json({ error: "Erro ao processar webhook Hotmart", details: responseData });
         }
       } else {
-        console.log(`[HOTMART] Evento ignorado: ${req.body.event}`);
-        return res.status(200).json({ 
-          success: true, 
-          message: `Evento ${req.body.event} ignorado`,
-          source: 'hotmart'
-        });
+        console.log("ℹ️ Evento Hotmart ignorado (não é PURCHASE_APPROVED):", req.body.event);
+        return res.status(200).json({ status: "ignored", event: req.body.event });
       }
     }
 
@@ -698,7 +671,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const body = shouldCompress ? zlib.gzipSync(jsonPayload) : jsonPayload;
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${ACCESS_TOKEN}`,
       Connection: "keep-alive",
       "User-Agent": "DigitalPaisagismo-CAPI-Proxy/1.0",
       ...(shouldCompress ? { "Content-Encoding": "gzip" } : {}),
