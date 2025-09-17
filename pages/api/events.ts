@@ -271,18 +271,26 @@ function processFbc(fbc: string): string | null {
   const trimmedFbc = fbc.trim();
 
   // ✅ CORREÇÃO: Regex mais rigorosa - aceita apenas timestamps de 13 dígitos (milissegundos)
-  const fbcPattern = /^fb\.1\.[0-9]{13}\.[A-Za-z0-9_-]+$/;
+  // Meta fbclid contém apenas: A-Z, a-z, 0-9, _ (SEM hífen!)
+  // Subdomain index pode ser 0, 1, 2, etc. conforme documentação da Meta
+  const fbcPattern = /^fb\.[0-9]+\.[0-9]{13}\.[A-Za-z0-9_]+$/;
   if (fbcPattern.test(trimmedFbc)) {
     console.log("✅ FBC válido (formato padrão com milissegundos):", trimmedFbc);
     return trimmedFbc;
   }
 
-  const fbclidPattern = /^[A-Za-z0-9_-]+$/;
+  // ✅ CORREÇÃO NOTIFICAÇÃO META: fbclid deve ter formato rigoroso
+  // - Deve começar com "IwAR" (padrão Meta oficial)
+  // - Deve ter pelo menos 30 caracteres (evita truncamento)
+  // - Não aceita letras minúsculas no início (evita conversão incorreta)
+  // - Contém apenas: A-Z, a-z, 0-9, _ (SEM hífen!)
+  const fbclidPattern = /^IwAR[A-Za-z0-9_]{27,}$/;
   if (fbclidPattern.test(trimmedFbc)) {
     // ✅ CORREÇÃO: Usar milissegundos consistentemente (não segundos)
     const timestamp = Date.now(); // Milissegundos - padrão consistente
+    // ✅ CORREÇÃO NOTIFICAÇÃO META: Usar subdomain index 1 para servidor (não 0)
     const formattedFbc = `fb.1.${timestamp}.${trimmedFbc}`;
-    console.log("✅ FBC formatado de fbclid puro (milissegundos):", formattedFbc);
+    console.log("✅ FBC formatado de fbclid puro (subdomain index correto):", formattedFbc);
     return formattedFbc;
   }
 
@@ -291,8 +299,9 @@ function processFbc(fbc: string): string | null {
     if (fbclidPattern.test(fbclid)) {
       // ✅ CORREÇÃO: Usar milissegundos consistentemente (não segundos)
       const timestamp = Date.now(); // Milissegundos - padrão consistente
+      // ✅ CORREÇÃO NOTIFICAÇÃO META: Usar subdomain index 1 para servidor (não 0)
       const formattedFbc = `fb.1.${timestamp}.${fbclid}`;
-      console.log("✅ FBC formatado de fbclid com prefixo (milissegundos):", formattedFbc);
+      console.log("✅ FBC formatado de fbclid com prefixo (subdomain index correto):", formattedFbc);
       return formattedFbc;
     }
   }
@@ -475,6 +484,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         if (processedFbc) {
           userData.fbc = processedFbc;
           console.log("✅ FBC processado e preservado:", processedFbc);
+        } else {
+          console.warn("⚠️ FBC inválido ignorado:", event.user_data.fbc);
         }
       }
 
@@ -530,85 +541,79 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
       client_ip_original: ip,
       client_ip_formatted: formattedIP,
-      payload_size: `${Math.round(Buffer.byteLength(jsonPayload) / 1024)}KB`,
-      compressed: shouldCompress,
+      ipv6_conversion_applied: ip.includes(':') ? 'Native IPv6' : 'IPv4→IPv6-mapped',
+      has_pii: false,
+      external_ids_count: enrichedData.filter((e) => e.user_data.external_id).length,
+      external_ids_from_frontend: enrichedData.filter(
+        (e) => e.user_data.external_id && typeof e.user_data.external_id === 'string' && e.user_data.external_id.length === 64
+      ).length,
+      has_geo_data: enrichedData.some((e) => e.user_data.country || e.user_data.state || e.user_data.city),
+      geo_locations: enrichedData
+        .filter((e) => e.user_data.country)
+        .map((e) => `${e.user_data.country}/${e.user_data.state}/${e.user_data.city}`)
+        .slice(0, 3),
+      fbc_processed: enrichedData.filter((e) => e.user_data.fbc).length,
+      cache_size: eventCache.size,
+      cache_ttl_hours: CACHE_TTL / (60 * 60 * 1000),
     });
 
-    const response = await fetch(META_URL, {
+    const response = await fetch(`${META_URL}?access_token=${ACCESS_TOKEN}`, {
       method: "POST",
       headers,
-      body,
+      body: body as BodyInit,
       signal: controller.signal,
     });
 
     clearTimeout(timeout);
+    const data = await response.json() as Record<string, unknown>;
+    const responseTime = Date.now() - startTime;
 
-    const responseText = await response.text();
-    let responseData;
-    try {
-      responseData = JSON.parse(responseText);
-    } catch {
-      responseData = { raw_response: responseText };
-    }
-
-    const processingTime = Date.now() - startTime;
-
-    if (response.ok) {
-      console.log("✅ Evento enviado com sucesso para Meta CAPI:", {
+    if (!response.ok) {
+      console.error("❌ Erro da Meta CAPI:", {
         status: response.status,
-        events_sent: enrichedData.length,
+        data,
+        events: enrichedData.length,
+        ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
         duplicates_blocked: duplicatesBlocked,
-        deduplication_efficiency: `${Math.round((duplicatesBlocked / originalCount) * 100)}%`,
-        processing_time: `${processingTime}ms`,
-        response: responseData,
-      });
-
-      return res.status(200).json({
-        success: true,
-        events_sent: enrichedData.length,
-        duplicates_blocked: duplicatesBlocked,
-        original_count: originalCount,
-        deduplication_rate: `${Math.round((duplicatesBlocked / originalCount) * 100)}%`,
-        processing_time: processingTime,
-        cache_size: eventCache.size,
-        meta_response: responseData,
-      });
-    } else {
-      console.error("❌ Erro ao enviar evento para Meta CAPI:", {
-        status: response.status,
-        statusText: response.statusText,
-        response: responseData,
-        events_attempted: enrichedData.length,
-        duplicates_blocked: duplicatesBlocked,
-        processing_time: `${processingTime}ms`,
       });
 
       return res.status(response.status).json({
-        error: "Erro ao enviar evento para Meta CAPI",
-        status: response.status,
-        events_attempted: enrichedData.length,
-        duplicates_blocked: duplicatesBlocked,
-        processing_time: processingTime,
-        meta_error: responseData,
+        error: "Erro da Meta",
+        details: data,
+        processing_time_ms: responseTime,
       });
     }
-  } catch (error: unknown) {
-    const processingTime = Date.now() - startTime;
-    const errorMessage = error instanceof Error ? error.message : "Erro desconhecido";
-    const errorName = error instanceof Error ? error.name : "UnknownError";
 
-    console.error("💥 Erro interno no servidor CAPI:", {
-      error: errorMessage,
-      name: errorName,
-      processing_time: `${processingTime}ms`,
-      stack: error instanceof Error ? error.stack : undefined,
-    });
-
-    return res.status(500).json({
-      error: "Erro interno do servidor",
-      message: errorMessage,
-      processing_time: processingTime,
+    console.log("✅ Evento enviado com sucesso para Meta CAPI:", {
+      events_processed: enrichedData.length,
+      duplicates_blocked: duplicatesBlocked,
+      processing_time_ms: responseTime,
+      compression_used: shouldCompress,
+      ip_type: ip.includes(':') ? 'IPv6' : 'IPv4',
+      external_ids_sent: enrichedData.filter((e) => e.user_data.external_id).length,
+      sha256_format_count: enrichedData.filter(
+        (e) => e.user_data.external_id && typeof e.user_data.external_id === 'string' && e.user_data.external_id.length === 64
+      ).length,
       cache_size: eventCache.size,
     });
+
+    res.status(200).json({
+      ...data,
+      ip_info: { type: ip.includes(':') ? 'IPv6' : 'IPv4', address: ip },
+      deduplication_info: {
+        original_events: originalCount,
+        processed_events: enrichedData.length,
+        duplicates_blocked: duplicatesBlocked,
+        cache_size: eventCache.size,
+      },
+    });
+  } catch (error: unknown) {
+    console.error("❌ Erro no Proxy CAPI:", error);
+    if (error instanceof Error && error.name === "AbortError") {
+      return res
+        .status(408)
+        .json({ error: "Timeout ao enviar evento para a Meta", timeout_ms: 15000 });
+    }
+    res.status(500).json({ error: "Erro interno no servidor CAPI." });
   }
 }
