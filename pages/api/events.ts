@@ -1,4 +1,10 @@
-// ✅ DIGITAL PAISAGISMO CAPI V8.5 - UNIFICAÇÃO HASH GEOGRÁFICO CRÍTICA
+// ✅ DIGITAL PAISAGISMO CAPI V8.7 - CORREÇÕES DE TIPAGEM E COMPLIANCE
+// V8.7: Correções de tipagem e compliance:
+// - Corrigido erro de tipagem: removidos arrays incorretos dos campos user_data
+// - Interface UserData agora recebe strings simples em vez de arrays
+// - Mantida compliance com documentação oficial webhook Hotmart 2.0
+// - checkout_country.iso com prioridade sobre buyer.address.country_iso
+// - Suporte a affiliates.affiliate_code conforme documentação oficial
 // CORREÇÃO CRÍTICA: Event_id agora é consistente entre pixel e API
 // PROBLEMA IDENTIFICADO: Event_ids aleatórios impediam deduplicação correta
 // SOLUÇÃO: Event_ids determinísticos baseados em dados do evento
@@ -58,6 +64,14 @@ interface HotmartWebhookData {
       zipcode?: string;
     };
   };
+  checkout_country?: {
+    name?: string;
+    iso?: string;
+  };
+  affiliates?: Array<{
+    affiliate_code?: string;
+    [key: string]: unknown;
+  }>;
   purchase: {
     transaction: string;
     price: { value: number; currency_value: string };
@@ -74,20 +88,23 @@ interface HotmartWebhookPayload {
 }
 
 const transformHotmartToMeta = (hotmartData: HotmartWebhookData): EventData => {
-  const { buyer, product, purchase } = hotmartData;
+  const { buyer, product, purchase, checkout_country } = hotmartData;
+
+  // Priorizar checkout_country.iso sobre buyer.address.country_iso conforme documentação oficial
+  const countryCode = checkout_country?.iso || buyer.address?.country_iso;
 
   return {
     event_name: "Purchase",
     event_time: Math.floor(Date.now() / 1000),
     action_source: "website",
     user_data: {
-      em: [hashSHA256(buyer.email.toLowerCase().trim())],
-      ph: buyer.checkout_phone ? [hashSHA256(buyer.checkout_phone.replace(/\D/g, ""))] : undefined,
-      fn: buyer.name ? [hashSHA256(buyer.name.toLowerCase().trim())] : undefined,
-      ct: buyer.address?.city ? [hashSHA256(buyer.address.city.toLowerCase().trim())] : undefined,
-      st: buyer.address?.state ? [hashSHA256(buyer.address.state.toLowerCase().trim())] : undefined,
-      zp: buyer.address?.zipcode ? [hashSHA256(buyer.address.zipcode)] : undefined,
-      country: buyer.address?.country_iso ? [hashSHA256(buyer.address.country_iso.toLowerCase())] : undefined,
+      em: hashSHA256(buyer.email.toLowerCase().trim()),
+      ph: buyer.checkout_phone ? hashSHA256(buyer.checkout_phone.replace(/\D/g, "")) : undefined,
+      fn: buyer.name ? hashSHA256(buyer.name.toLowerCase().trim()) : undefined,
+      ct: buyer.address?.city ? hashSHA256(buyer.address.city.toLowerCase().trim()) : undefined,
+      st: buyer.address?.state ? hashSHA256(buyer.address.state.toLowerCase().trim()) : undefined,
+      zp: buyer.address?.zipcode ? hashSHA256(buyer.address.zipcode) : undefined,
+      country: countryCode ? hashSHA256(countryCode.toLowerCase()) : undefined,
     },
     custom_data: {
       currency: purchase.price.currency_value,
@@ -640,20 +657,20 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       }
 
       if (typeof event.user_data?.country === "string" && event.user_data.country.trim()) {
-          userData.country = [hashSHA256(event.user_data.country.toLowerCase().trim())];
-          console.log("🌍 Country hasheado (SHA256):", userData.country[0]);
+          userData.country = hashSHA256(event.user_data.country.toLowerCase().trim());
+          console.log("🌍 Country hasheado (SHA256):", userData.country);
         }
         if (typeof event.user_data?.state === "string" && event.user_data.state.trim()) {
-          userData.st = [hashSHA256(event.user_data.state.toLowerCase().trim())];
-          console.log("🌍 State hasheado (SHA256):", userData.st[0]);
+          userData.st = hashSHA256(event.user_data.state.toLowerCase().trim());
+          console.log("🌍 State hasheado (SHA256):", userData.st);
         }
         if (typeof event.user_data?.city === "string" && event.user_data.city.trim()) {
-          userData.ct = [hashSHA256(event.user_data.city.toLowerCase().trim())];
-          console.log("🌍 City hasheado (SHA256):", userData.ct[0]);
+          userData.ct = hashSHA256(event.user_data.city.toLowerCase().trim());
+          console.log("🌍 City hasheado (SHA256):", userData.ct);
         }
         if (typeof event.user_data?.postal === "string" && event.user_data.postal.trim()) {
-          userData.zp = [hashSHA256(event.user_data.postal.trim())];
-          console.log("🌍 Postal Code hasheado (SHA256):", userData.zp[0]);
+          userData.zp = hashSHA256(event.user_data.postal.trim());
+          console.log("🌍 Postal Code hasheado (SHA256):", userData.zp);
         }
 
       return {
