@@ -1,4 +1,4 @@
-// ✅ DIGITAL PAISAGISMO CAPI V8.3 - INTEGRAÇÃO HOTMART CORRIGIDA
+// ✅ DIGITAL PAISAGISMO CAPI V8.5 - UNIFICAÇÃO HASH GEOGRÁFICO CRÍTICA
 // CORREÇÃO CRÍTICA: Event_id agora é consistente entre pixel e API
 // PROBLEMA IDENTIFICADO: Event_ids aleatórios impediam deduplicação correta
 // SOLUÇÃO: Event_ids determinísticos baseados em dados do evento
@@ -7,6 +7,8 @@
 // Cache aumentado para 50k eventos para melhor cobertura
 // ✅ HOTMART: Corrigido purchaser → buyer, transaction → purchase
 // ✅ HOTMART: Webhook processamento completo com transformação para Meta CAPI
+// 🔥 CRÍTICO V8.4: Campo country agora é hasheado em SHA256 (Meta CAPI exigência)
+// 🔥 CRÍTICO V8.5: Unificação hash geográfico - frontend e Hotmart agora consistentes
 
 import * as crypto from "crypto";
 import * as zlib from "zlib";
@@ -85,7 +87,7 @@ const transformHotmartToMeta = (hotmartData: HotmartWebhookData): EventData => {
       ct: buyer.address?.city ? [hashSHA256(buyer.address.city.toLowerCase().trim())] : undefined,
       st: buyer.address?.state ? [hashSHA256(buyer.address.state.toLowerCase().trim())] : undefined,
       zp: buyer.address?.zipcode ? [hashSHA256(buyer.address.zipcode)] : undefined,
-      country: buyer.address?.country_iso?.toLowerCase(),
+      country: buyer.address?.country_iso ? [hashSHA256(buyer.address.country_iso.toLowerCase())] : undefined,
     },
     custom_data: {
       currency: purchase.price.currency_value,
@@ -638,21 +640,21 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       }
 
       if (typeof event.user_data?.country === "string" && event.user_data.country.trim()) {
-        userData.country = event.user_data.country.toLowerCase().trim();
-        console.log("🌍 Country adicionado:", userData.country);
-      }
-      if (typeof event.user_data?.state === "string" && event.user_data.state.trim()) {
-        userData.state = event.user_data.state.toLowerCase().trim();
-        console.log("🌍 State adicionado:", userData.state);
-      }
-      if (typeof event.user_data?.city === "string" && event.user_data.city.trim()) {
-        userData.city = event.user_data.city.toLowerCase().trim();
-        console.log("🌍 City adicionado:", userData.city);
-      }
-      if (typeof event.user_data?.postal === "string" && event.user_data.postal.trim()) {
-        userData.zp = event.user_data.postal.trim();
-        console.log("🌍 Postal Code (zp) adicionado:", userData.zp);
-      }
+          userData.country = [hashSHA256(event.user_data.country.toLowerCase().trim())];
+          console.log("🌍 Country hasheado (SHA256):", userData.country[0]);
+        }
+        if (typeof event.user_data?.state === "string" && event.user_data.state.trim()) {
+          userData.st = [hashSHA256(event.user_data.state.toLowerCase().trim())];
+          console.log("🌍 State hasheado (SHA256):", userData.st[0]);
+        }
+        if (typeof event.user_data?.city === "string" && event.user_data.city.trim()) {
+          userData.ct = [hashSHA256(event.user_data.city.toLowerCase().trim())];
+          console.log("🌍 City hasheado (SHA256):", userData.ct[0]);
+        }
+        if (typeof event.user_data?.postal === "string" && event.user_data.postal.trim()) {
+          userData.zp = [hashSHA256(event.user_data.postal.trim())];
+          console.log("🌍 Postal Code hasheado (SHA256):", userData.zp[0]);
+        }
 
       return {
         event_name: eventName,
