@@ -261,7 +261,7 @@ function formatIPForMeta(ip: string): string {
   return ip;
 }
 
-// ✅ NOVA FUNÇÃO: Processamento robusto do FBC
+// ✅ CORREÇÃO CRÍTICA: Processamento FBC conforme documentação Meta oficial
 function processFbc(fbc: string): string | null {
   if (!fbc || typeof fbc !== "string") {
     console.warn("⚠️ FBC inválido:", fbc);
@@ -270,44 +270,43 @@ function processFbc(fbc: string): string | null {
 
   const trimmedFbc = fbc.trim();
 
-  // ✅ CORREÇÃO: Regex mais rigorosa - aceita apenas timestamps de 13 dígitos (milissegundos)
-  // Meta fbclid contém apenas: A-Z, a-z, 0-9, _ (SEM hífen!)
-  // Subdomain index pode ser 0, 1, 2, etc. conforme documentação da Meta
-  const fbcPattern = /^fb\.[0-9]+\.[0-9]{13}\.[A-Za-z0-9_]+$/;
+  // ✅ CORREÇÃO CRÍTICA: Aceitar FBC já formatado (fb.subdomainIndex.timestamp.fbclid)
+  // Documentação Meta: fb.[0-9]+.[0-9]{13}.[fbclid_value]
+  const fbcPattern = /^fb\.[0-9]+\.[0-9]{13}\.[A-Za-z0-9_-]+$/;
   if (fbcPattern.test(trimmedFbc)) {
-    console.log("✅ FBC válido (formato padrão com milissegundos):", trimmedFbc);
-    return trimmedFbc;
+    console.log("✅ FBC válido (formato padrão Meta):", trimmedFbc);
+    return trimmedFbc; // ✅ PRESERVA valor original sem modificações
   }
 
-  // ✅ CORREÇÃO NOTIFICAÇÃO META: fbclid deve ter formato rigoroso
-  // - Deve começar com "IwAR" (padrão Meta oficial)
-  // - Deve ter pelo menos 30 caracteres (evita truncamento)
-  // - Não aceita letras minúsculas no início (evita conversão incorreta)
-  // - Contém apenas: A-Z, a-z, 0-9, _ (SEM hífen!)
-  const fbclidPattern = /^IwAR[A-Za-z0-9_]{27,}$/;
+  // ✅ CORREÇÃO CRÍTICA: Aceitar QUALQUER fbclid válido conforme Meta
+  // Meta documentação oficial: "ClickID value is case sensitive - do not apply any modifications"
+  // Aceita qualquer formato de fbclid que a Meta gera (múltiplos prefixos possíveis)
+  const fbclidPattern = /^[A-Za-z0-9_-]{15,}$/; // Flexível: mínimo 15 chars, qualquer prefixo válido
+  
+  // Se é um fbclid puro (sem prefixo fbclid=)
   if (fbclidPattern.test(trimmedFbc)) {
-    // ✅ CORREÇÃO: Usar milissegundos consistentemente (não segundos)
-    const timestamp = Date.now(); // Milissegundos - padrão consistente
-    // ✅ CORREÇÃO NOTIFICAÇÃO META: Usar subdomain index 1 para servidor (não 0)
+    const timestamp = Date.now(); // Milissegundos conforme documentação Meta
     const formattedFbc = `fb.1.${timestamp}.${trimmedFbc}`;
-    console.log("✅ FBC formatado de fbclid puro (subdomain index correto):", formattedFbc);
-    return formattedFbc;
+    console.log("✅ FBC formatado de fbclid puro:", formattedFbc);
+    return formattedFbc; // ✅ PRESERVA fbclid original sem modificações
   }
 
+  // Se tem prefixo fbclid=
   if (trimmedFbc.startsWith("fbclid=")) {
     const fbclid = trimmedFbc.substring(7);
     if (fbclidPattern.test(fbclid)) {
-      // ✅ CORREÇÃO: Usar milissegundos consistentemente (não segundos)
-      const timestamp = Date.now(); // Milissegundos - padrão consistente
-      // ✅ CORREÇÃO NOTIFICAÇÃO META: Usar subdomain index 1 para servidor (não 0)
+      const timestamp = Date.now(); // Milissegundos conforme documentação Meta
       const formattedFbc = `fb.1.${timestamp}.${fbclid}`;
-      console.log("✅ FBC formatado de fbclid com prefixo (subdomain index correto):", formattedFbc);
-      return formattedFbc;
+      console.log("✅ FBC formatado de fbclid com prefixo:", formattedFbc);
+      return formattedFbc; // ✅ PRESERVA fbclid original sem modificações
     }
   }
 
-  console.warn("⚠️ FBC formato inválido:", trimmedFbc);
-  return null;
+  // ✅ CRÍTICO: NUNCA rejeitar valores que podem ser válidos
+  // Meta documentação: "do not apply any modifications before using"
+  // Se chegou aqui, pode ser um formato que não reconhecemos mas é válido
+  console.log("✅ FBC formato não reconhecido - preservando valor original:", trimmedFbc);
+  return trimmedFbc; // ✅ SEMPRE preserva valor original conforme Meta
 }
 
 const RATE_LIMIT = 100; // Aumentado para suportar picos de tráfego
@@ -470,12 +469,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       };
 
       if (typeof event.user_data?.fbp === "string" && event.user_data.fbp.startsWith("fb.")) {
-        const fbpPattern = /^fb\.[0-9]+\.[0-9]+\.[A-Za-z0-9_-]+$/;
+        // ✅ CORREÇÃO: FBP pode ter letras no timestamp (formato Meta flexível)
+        const fbpPattern = /^fb\.[A-Za-z0-9]+\.[A-Za-z0-9]+\.[A-Za-z0-9_-]+$/;
         if (fbpPattern.test(event.user_data.fbp)) {
           userData.fbp = event.user_data.fbp;
           console.log("✅ FBP válido preservado:", event.user_data.fbp);
         } else {
-          console.warn("⚠️ FBP formato inválido ignorado:", event.user_data.fbp);
+          // ✅ CORREÇÃO: Preservar valor mesmo com formato não reconhecido
+          userData.fbp = event.user_data.fbp;
+          console.warn("⚠️ FBP formato não reconhecido, mas preservando:", event.user_data.fbp);
         }
       }
 
@@ -485,7 +487,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           userData.fbc = processedFbc;
           console.log("✅ FBC processado e preservado:", processedFbc);
         } else {
-          console.warn("⚠️ FBC inválido ignorado:", event.user_data.fbc);
+          // ✅ CORREÇÃO: Preservar valor original mesmo quando processamento falha
+          userData.fbc = event.user_data.fbc;
+          console.warn("⚠️ FBC não processado, mas preservando valor original:", event.user_data.fbc);
         }
       }
 
