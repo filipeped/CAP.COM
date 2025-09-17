@@ -338,7 +338,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     "https://www.digitalpaisagismo.com",
     "https://digitalpaisagismo.com",
     "https://cap.digitalpaisagismo.com",
-    "https://atendimento.digitalpaisagismo.com",
+    "https://www.consultoria.digitalpaisagismo.com",
     "https://consultoria.digitalpaisagismo.com",
     "https://cap.consultoria.digitalpaisagismo.com",
     "https://www.projeto.digitalpaisagismo.com",
