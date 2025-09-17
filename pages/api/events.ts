@@ -340,7 +340,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     "https://cap.digitalpaisagismo.com",
     "https://atendimento.digitalpaisagismo.com",
     "https://consultoria.digitalpaisagismo.com",
-    "https://projeto.digitalpaisagismo.com",
+    "https://cap.consultoria.digitalpaisagismo.com",
     "https://www.projeto.digitalpaisagismo.com",
     "http://localhost:3000",
     "http://localhost:8080",
