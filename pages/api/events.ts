@@ -371,20 +371,20 @@ function processFbc(fbc: string): string | null {
   
   // Se é um fbclid puro (sem prefixo fbclid=)
   if (fbclidPattern.test(trimmedFbc)) {
-    const timestamp = Date.now(); // Milissegundos conforme documentação Meta
-    const formattedFbc = `fb.1.${timestamp}.${trimmedFbc}`;
-    console.log("✅ FBC formatado de fbclid puro:", formattedFbc);
-    return formattedFbc; // ✅ PRESERVA fbclid original sem modificações
+    // ✅ CORREÇÃO CRÍTICA: PRESERVAR fbclid original conforme Meta
+    // NUNCA modificar o valor ou criar timestamps artificiais
+    console.log("✅ fbclid válido - preservando valor original:", trimmedFbc);
+    return trimmedFbc; // ✅ PRESERVA fbclid original SEM formatação
   }
 
   // Se tem prefixo fbclid=
   if (trimmedFbc.startsWith("fbclid=")) {
     const fbclid = trimmedFbc.substring(7);
     if (fbclidPattern.test(fbclid)) {
-      const timestamp = Date.now(); // Milissegundos conforme documentação Meta
-      const formattedFbc = `fb.1.${timestamp}.${fbclid}`;
-      console.log("✅ FBC formatado de fbclid com prefixo:", formattedFbc);
-      return formattedFbc; // ✅ PRESERVA fbclid original sem modificações
+      // ✅ CORREÇÃO CRÍTICA: PRESERVAR fbclid original conforme Meta
+      // Apenas remover prefixo fbclid= se presente, mas NUNCA modificar o valor
+      console.log("✅ fbclid válido - preservando valor original:", fbclid);
+      return fbclid; // ✅ PRESERVA fbclid original SEM formatação
     }
   }
 
@@ -507,7 +507,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         const response = await fetch(META_URL, {
           method: "POST",
           headers,
-          body: finalPayload,
+          body: shouldCompress ? new Uint8Array(finalPayload as Buffer) : finalPayload as string,
           signal: AbortSignal.timeout(15000),
         });
 
