@@ -354,7 +354,9 @@ function extractFbclid(req: ApiRequest): string | null {
   const url = req.headers.referer || req.headers.origin || '';
   if (url) {
     try {
-      const urlObj = new URL(url);
+      // ✅ CORREÇÃO: Garantir que url seja string
+      const urlString = Array.isArray(url) ? url[0] : url;
+      const urlObj = new URL(urlString);
       const fbclidFromUrl = urlObj.searchParams.get('fbclid');
       if (fbclidFromUrl && fbclidFromUrl.trim()) {
         console.log("✅ fbclid extraído da URL:", fbclidFromUrl);
@@ -557,15 +559,20 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
         const payloadString = JSON.stringify(payload);
         const shouldCompress = payloadString.length > 2048;
-        const finalPayload = shouldCompress ? zlib.gzipSync(payloadString) : payloadString;
-
+        
+        // ✅ CORREÇÃO: Definir tipos corretos para fetch body
+        let finalPayload: string | ArrayBuffer;
         const headers: Record<string, string> = {
           "Content-Type": "application/json",
           "User-Agent": "DigitalPaisagismo-CAPI/8.3-Hotmart",
         };
 
         if (shouldCompress) {
+          const compressed = zlib.gzipSync(payloadString);
+          finalPayload = compressed.buffer.slice(compressed.byteOffset, compressed.byteOffset + compressed.byteLength) as ArrayBuffer;
           headers["Content-Encoding"] = "gzip";
+        } else {
+          finalPayload = payloadString;
         }
 
         console.log("📤 Enviando evento Hotmart para Meta CAPI:", {
