@@ -354,24 +354,27 @@ function processFbc(fbc: string): string | null {
     return null;
   }
 
+  // ✅ CRÍTICO: Facebook documentação - "ClickID value is case sensitive - do not apply any modifications"
+  // Apenas removemos espaços em branco, mas preservamos case e caracteres especiais
   const trimmedFbc = fbc.trim();
 
   // ✅ CORREÇÃO CRÍTICA: Aceitar FBC já formatado (fb.subdomainIndex.timestamp.fbclid)
-  // Documentação Meta: fb.[0-9]+.[0-9]{13}.[fbclid_value]
-  const fbcPattern = /^fb\.[0-9]+\.[0-9]{13}\.[A-Za-z0-9_-]+$/;
+  // Documentação Meta: fb.[0-9]+.[0-9]{10,13}.[fbclid_value] - timestamp pode variar
+  const fbcPattern = /^fb\.[0-9]+\.[0-9]{10,13}\.[A-Za-z0-9_-]+$/;
   if (fbcPattern.test(trimmedFbc)) {
     console.log("✅ FBC válido (formato padrão Meta):", trimmedFbc);
     return trimmedFbc; // ✅ PRESERVA valor original sem modificações
   }
 
-  // ✅ CORREÇÃO CRÍTICA: Aceitar QUALQUER fbclid válido conforme Meta
+  // ✅ CORREÇÃO CRÍTICA: Aceitar APENAS fbclid válido conforme Meta
   // Meta documentação oficial: "ClickID value is case sensitive - do not apply any modifications"
-  // Aceita qualquer formato de fbclid que a Meta gera (múltiplos prefixos possíveis)
-  const fbclidPattern = /^[A-Za-z0-9_-]{15,}$/; // Flexível: mínimo 15 chars, qualquer prefixo válido
+  // Padrão oficial: IwAR seguido de caracteres alfanuméricos válidos (até 100 caracteres)
+  const fbclidPattern = /^IwAR[A-Za-z0-9_-]{20,100}$/; // Padrão específico para fbclid do Facebook
   
   // Se é um fbclid puro (sem prefixo fbclid=)
   if (fbclidPattern.test(trimmedFbc)) {
     const timestamp = Date.now(); // Milissegundos conforme documentação Meta
+    // subdomainIndex: 0='com', 1='example.com', 2='www.example.com' - usando 1 para domínio padrão
     const formattedFbc = `fb.1.${timestamp}.${trimmedFbc}`;
     console.log("✅ FBC formatado de fbclid puro:", formattedFbc);
     return formattedFbc; // ✅ PRESERVA fbclid original sem modificações
@@ -382,6 +385,7 @@ function processFbc(fbc: string): string | null {
     const fbclid = trimmedFbc.substring(7);
     if (fbclidPattern.test(fbclid)) {
       const timestamp = Date.now(); // Milissegundos conforme documentação Meta
+      // subdomainIndex: 0='com', 1='example.com', 2='www.example.com' - usando 1 para domínio padrão
       const formattedFbc = `fb.1.${timestamp}.${fbclid}`;
       console.log("✅ FBC formatado de fbclid com prefixo:", formattedFbc);
       return formattedFbc; // ✅ PRESERVA fbclid original sem modificações
