@@ -1,4 +1,3 @@
-
 // ✅ DIGITAL PAISAGISMO CAPI V8.7 - CORREÇÕES DE TIPAGEM E COMPLIANCE
 // V8.7: Correções de tipagem e compliance:
 // - Corrigido erro de tipagem: removidos arrays incorretos dos campos user_data
