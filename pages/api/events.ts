@@ -348,6 +348,72 @@ function formatIPForMeta(ip: string): string {
 }
 
 // ✅ CORREÇÃO CRÍTICA: Processamento FBC conforme documentação Meta oficial
+// ✅ NOVA FUNÇÃO: Extrair fbclid de cookies e URL conforme documentação Meta
+function extractFbclid(req: ApiRequest): string | null {
+  // 1. Tentar extrair de parâmetro URL fbclid (prioridade máxima)
+  const url = req.headers.referer || req.headers.origin || '';
+  if (url) {
+    try {
+      const urlObj = new URL(url);
+      const fbclidFromUrl = urlObj.searchParams.get('fbclid');
+      if (fbclidFromUrl && fbclidFromUrl.trim()) {
+        console.log("✅ fbclid extraído da URL:", fbclidFromUrl);
+        return fbclidFromUrl.trim(); // ✅ PRESERVA case original
+      }
+    } catch (e) {
+      console.warn("⚠️ Erro ao processar URL para fbclid:", e);
+    }
+  }
+
+  // 2. Tentar extrair do cookie _fbc (segunda prioridade)
+  const fbcCookie = req.cookies?._fbc;
+  if (fbcCookie && typeof fbcCookie === 'string') {
+    // Formato do cookie _fbc: fb.subdomainIndex.timestamp.fbclid
+    const parts = fbcCookie.split('.');
+    if (parts.length >= 4 && parts[0] === 'fb') {
+      const fbclid = parts.slice(3).join('.'); // Pega tudo após o terceiro ponto
+      if (fbclid && fbclid.trim()) {
+        console.log("✅ fbclid extraído do cookie _fbc:", fbclid);
+        return fbclid.trim(); // ✅ PRESERVA case original
+      }
+    }
+  }
+
+  console.log("ℹ️ Nenhum fbclid encontrado em URL ou cookies");
+  return null;
+}
+
+// ✅ NOVA FUNÇÃO: Definir cookie _fbc conforme documentação Meta
+function setFbcCookie(res: ApiResponse, fbclid: string, existingFbc?: string): void {
+  if (!fbclid || typeof fbclid !== 'string') {
+    return;
+  }
+
+  // Verificar se já existe um cookie _fbc válido com o mesmo fbclid
+  if (existingFbc && typeof existingFbc === 'string') {
+    const parts = existingFbc.split('.');
+    if (parts.length >= 4 && parts[0] === 'fb') {
+      const existingFbclid = parts.slice(3).join('.');
+      if (existingFbclid === fbclid) {
+        console.log("✅ Cookie _fbc já existe com mesmo fbclid, não sobrescrevendo");
+        return;
+      }
+    }
+  }
+
+  // Criar novo cookie _fbc conforme documentação Meta
+  const timestamp = Date.now(); // Milissegundos conforme documentação
+  const subdomainIndex = 1; // Para domínio padrão conforme documentação
+  const fbcValue = `fb.${subdomainIndex}.${timestamp}.${fbclid}`;
+  
+  // Definir cookie com 90 dias de expiração conforme documentação Meta
+  const expirationDate = new Date(Date.now() + (90 * 24 * 60 * 60 * 1000));
+  const cookieString = `_fbc=${fbcValue}; Expires=${expirationDate.toUTCString()}; Path=/; SameSite=Lax; Secure`;
+  
+  res.setHeader('Set-Cookie', cookieString);
+  console.log("✅ Cookie _fbc definido:", fbcValue);
+}
+
 function processFbc(fbc: string): string | null {
   if (!fbc || typeof fbc !== "string") {
     console.warn("⚠️ FBC inválido:", fbc);
@@ -355,29 +421,31 @@ function processFbc(fbc: string): string | null {
   }
 
   // ✅ CRÍTICO: Facebook documentação - "ClickID value is case sensitive - do not apply any modifications"
-  // Apenas removemos espaços em branco, mas preservamos case e caracteres especiais
+  // APENAS removemos espaços em branco no início/fim, preservando TUDO o resto
   const trimmedFbc = fbc.trim();
 
   // ✅ CORREÇÃO CRÍTICA: Aceitar FBC já formatado (fb.subdomainIndex.timestamp.fbclid)
-  // Documentação Meta: fb.[0-9]+.[0-9]{10,13}.[fbclid_value] - timestamp pode variar
-  const fbcPattern = /^fb\.[0-9]+\.[0-9]{10,13}\.[A-Za-z0-9_-]+$/;
+  // Documentação Meta: version.subdomainIndex.creationTime.fbclid
+  // Padrão mais flexível para aceitar qualquer fbclid válido após os pontos
+  const fbcPattern = /^fb\.[0-9]+\.[0-9]{10,13}\..+$/;
   if (fbcPattern.test(trimmedFbc)) {
-    console.log("✅ FBC válido (formato padrão Meta):", trimmedFbc);
-    return trimmedFbc; // ✅ PRESERVA valor original sem modificações
+    console.log("✅ FBC já formatado corretamente (preservando):", trimmedFbc);
+    return trimmedFbc; // ✅ PRESERVA valor original sem NENHUMA modificação
   }
 
-  // ✅ CORREÇÃO CRÍTICA: Aceitar APENAS fbclid válido conforme Meta
-  // Meta documentação oficial: "ClickID value is case sensitive - do not apply any modifications"
-  // Padrão oficial: IwAR seguido de caracteres alfanuméricos válidos (até 100 caracteres)
-  const fbclidPattern = /^IwAR[A-Za-z0-9_-]{20,100}$/; // Padrão específico para fbclid do Facebook
+  // ✅ CORREÇÃO CRÍTICA: Padrão mais flexível para fbclid
+  // Meta documentação: "do not apply any modifications before using, such as lower or upper case"
+  // Aceitar qualquer fbclid que comece com caracteres válidos (não apenas IwAR)
+  const fbclidPattern = /^[A-Za-z0-9_-]{10,200}$/; // Padrão mais flexível para fbclid
   
   // Se é um fbclid puro (sem prefixo fbclid=)
   if (fbclidPattern.test(trimmedFbc)) {
+    const fbclid = trimmedFbc; // O valor já é o fbclid puro
     const timestamp = Date.now(); // Milissegundos conforme documentação Meta
-    // subdomainIndex: 0='com', 1='example.com', 2='www.example.com' - usando 1 para domínio padrão
-    const formattedFbc = `fb.1.${timestamp}.${trimmedFbc}`;
-    console.log("✅ FBC formatado de fbclid puro:", formattedFbc);
-    return formattedFbc; // ✅ PRESERVA fbclid original sem modificações
+    // subdomainIndex: 1 para domínio padrão conforme documentação
+    const formattedFbc = `fb.1.${timestamp}.${fbclid}`;
+    console.log("✅ FBC formatado de fbclid puro (preservando case):", formattedFbc);
+    return formattedFbc; // ✅ PRESERVA fbclid original SEM modificações
   }
 
   // Se tem prefixo fbclid=
@@ -385,17 +453,17 @@ function processFbc(fbc: string): string | null {
     const fbclid = trimmedFbc.substring(7);
     if (fbclidPattern.test(fbclid)) {
       const timestamp = Date.now(); // Milissegundos conforme documentação Meta
-      // subdomainIndex: 0='com', 1='example.com', 2='www.example.com' - usando 1 para domínio padrão
+      // subdomainIndex: 1 para domínio padrão conforme documentação
       const formattedFbc = `fb.1.${timestamp}.${fbclid}`;
-      console.log("✅ FBC formatado de fbclid com prefixo:", formattedFbc);
-      return formattedFbc; // ✅ PRESERVA fbclid original sem modificações
+      console.log("✅ FBC formatado de fbclid com prefixo (preservando case):", formattedFbc);
+      return formattedFbc; // ✅ PRESERVA fbclid original SEM modificações
     }
   }
 
-  // ✅ CRÍTICO: NUNCA rejeitar valores que podem ser válidos
-  // Meta documentação: "do not apply any modifications before using"
-  // Se chegou aqui, pode ser um formato que não reconhecemos mas é válido
-  console.log("✅ FBC formato não reconhecido - preservando valor original:", trimmedFbc);
+  // ✅ CRÍTICO: SEMPRE preservar valor original
+  // Meta documentação: "Note: ClickID value is case sensitive - do not apply any modifications"
+  // Se chegou aqui, pode ser um formato válido que não reconhecemos
+  console.log("✅ FBC formato não reconhecido - preservando valor original SEM modificações:", trimmedFbc);
   return trimmedFbc; // ✅ SEMPRE preserva valor original conforme Meta
 }
 
@@ -648,15 +716,33 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         }
       }
 
-      if (event.user_data?.fbc) {
-        const processedFbc = processFbc(event.user_data.fbc);
+      // ✅ PROCESSAMENTO FBC MELHORADO: Priorizar dados do evento, depois extrair de cookies/URL
+      let fbcToProcess = event.user_data?.fbc;
+      let extractedFbclid: string | null = null;
+      
+      // Se não há fbc nos dados do evento, tentar extrair de cookies/URL
+      if (!fbcToProcess) {
+        extractedFbclid = extractFbclid(req);
+        if (extractedFbclid) {
+          fbcToProcess = extractedFbclid;
+          console.log("✅ fbclid extraído de cookies/URL será processado:", extractedFbclid);
+        }
+      }
+
+      if (fbcToProcess) {
+        const processedFbc = processFbc(fbcToProcess);
         if (processedFbc) {
           userData.fbc = processedFbc;
           console.log("✅ FBC processado e preservado:", processedFbc);
+          
+          // ✅ DEFINIR COOKIE _FBC: Se extraímos fbclid da URL, definir cookie
+          if (extractedFbclid) {
+            setFbcCookie(res, extractedFbclid, req.cookies?._fbc);
+          }
         } else {
           // ✅ CORREÇÃO: Preservar valor original mesmo quando processamento falha
-          userData.fbc = event.user_data.fbc;
-          console.warn("⚠️ FBC não processado, mas preservando valor original:", event.user_data.fbc);
+          userData.fbc = fbcToProcess;
+          console.warn("⚠️ FBC não processado, mas preservando valor original:", fbcToProcess);
         }
       }
 
