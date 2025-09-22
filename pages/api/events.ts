@@ -106,7 +106,7 @@ const transformHotmartToMeta = (hotmartData: HotmartWebhookData): EventData => {
       fn: buyer.name ? hashSHA256(buyer.name.toLowerCase().trim()) : undefined,
       ct: buyer.address?.city ? hashSHA256(buyer.address.city.toLowerCase().trim()) : undefined,
       st: buyer.address?.state ? hashSHA256(buyer.address.state.toLowerCase().trim()) : undefined,
-      zp: buyer.address?.zipcode ? hashSHA256(buyer.address.zipcode) : undefined,
+      zp: buyer.address?.zipcode ? hashSHA256(buyer.address.zipcode.toLowerCase()) : undefined,
       country: countryCode ? hashSHA256(countryCode.toLowerCase()) : undefined,
     },
     custom_data: {
@@ -699,7 +699,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           userData.zp = postalValue;
           console.log("🌍 Postal Code já hasheado (frontend):", postalValue.substring(0, 16) + '...');
         } else {
-          userData.zp = hashSHA256(postalValue);
+          userData.zp = hashSHA256(postalValue.toLowerCase());
           console.log("🌍 Postal Code hasheado (fallback API):", (userData.zp as string).substring(0, 16) + '...');
         }
       }
@@ -815,3 +815,4 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     res.status(500).json({ error: "Erro interno no servidor CAPI." });
   }
 }
+
