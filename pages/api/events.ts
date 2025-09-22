@@ -28,6 +28,9 @@ interface UserData {
   state?: string;
   city?: string;
   postal?: string;
+  st?: string;
+  ct?: string;
+  zp?: string;
   [key: string]: unknown;
 }
 
@@ -656,22 +659,45 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         }
       }
 
+      // ✅ CORREÇÃO CRÍTICA: Dados geográficos já vêm hasheados do frontend (consistência Pixel/CAPI)
       if (typeof event.user_data?.country === "string" && event.user_data.country.trim()) {
+        // Verificar se já está hasheado (64 caracteres = SHA256)
+        if (event.user_data.country.length === 64) {
+          userData.country = event.user_data.country;
+          console.log("🌍 Country já hasheado (frontend):", (userData.country as string).substring(0, 16) + '...');
+        } else {
+          // Fallback: aplicar hash se não estiver hasheado
           userData.country = hashSHA256(event.user_data.country.toLowerCase().trim());
-          console.log("🌍 Country hasheado (SHA256):", userData.country);
+          console.log("🌍 Country hasheado (fallback API):", (userData.country as string).substring(0, 16) + '...');
         }
-        if (typeof event.user_data?.state === "string" && event.user_data.state.trim()) {
+      }
+      if (typeof event.user_data?.state === "string" && event.user_data.state.trim()) {
+        if (event.user_data.state.length === 64) {
+          userData.st = event.user_data.state;
+          console.log("🌍 State já hasheado (frontend):", (userData.st as string).substring(0, 16) + '...');
+        } else {
           userData.st = hashSHA256(event.user_data.state.toLowerCase().trim());
-          console.log("🌍 State hasheado (SHA256):", userData.st);
+          console.log("🌍 State hasheado (fallback API):", (userData.st as string).substring(0, 16) + '...');
         }
-        if (typeof event.user_data?.city === "string" && event.user_data.city.trim()) {
+      }
+      if (typeof event.user_data?.city === "string" && event.user_data.city.trim()) {
+        if (event.user_data.city.length === 64) {
+          userData.ct = event.user_data.city;
+          console.log("🌍 City já hasheado (frontend):", (userData.ct as string).substring(0, 16) + '...');
+        } else {
           userData.ct = hashSHA256(event.user_data.city.toLowerCase().trim());
-          console.log("🌍 City hasheado (SHA256):", userData.ct);
+          console.log("🌍 City hasheado (fallback API):", (userData.ct as string).substring(0, 16) + '...');
         }
-        if (typeof event.user_data?.postal === "string" && event.user_data.postal.trim()) {
+      }
+      if (typeof event.user_data?.postal === "string" && event.user_data.postal.trim()) {
+        if (event.user_data.postal.length === 64) {
+          userData.zp = event.user_data.postal;
+          console.log("🌍 Postal Code já hasheado (frontend):", (userData.zp as string).substring(0, 16) + '...');
+        } else {
           userData.zp = hashSHA256(event.user_data.postal.trim());
-          console.log("🌍 Postal Code hasheado (SHA256):", userData.zp);
+          console.log("🌍 Postal Code hasheado (fallback API):", (userData.zp as string).substring(0, 16) + '...');
         }
+      }
 
       return {
         event_name: eventName,
