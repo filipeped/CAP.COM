@@ -659,42 +659,47 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         }
       }
 
-      // ✅ CORREÇÃO CRÍTICA: Dados geográficos já vêm hasheados do frontend (consistência Pixel/CAPI)
+      // ✅ CORREÇÃO CRÍTICA: Verificar se dados geográficos já estão hasheados (evitar double hash)
+      // SHA256 sempre tem 64 caracteres hexadecimais - se já tem 64 chars, não re-hashear
       if (typeof event.user_data?.country === "string" && event.user_data.country.trim()) {
-        // Verificar se já está hasheado (64 caracteres = SHA256)
-        if (event.user_data.country.length === 64) {
-          userData.country = event.user_data.country;
-          console.log("🌍 Country já hasheado (frontend):", (userData.country as string).substring(0, 16) + '...');
+        const countryValue = event.user_data.country.trim();
+        // Verificar se já está hasheado (64 caracteres hexadecimais = SHA256)
+        if (countryValue.length === 64 && /^[a-f0-9]{64}$/i.test(countryValue)) {
+          userData.country = countryValue;
+          console.log("🌍 Country já hasheado (frontend):", countryValue.substring(0, 16) + '...');
         } else {
           // Fallback: aplicar hash se não estiver hasheado
-          userData.country = hashSHA256(event.user_data.country.toLowerCase().trim());
+          userData.country = hashSHA256(countryValue.toLowerCase());
           console.log("🌍 Country hasheado (fallback API):", (userData.country as string).substring(0, 16) + '...');
         }
       }
       if (typeof event.user_data?.state === "string" && event.user_data.state.trim()) {
-        if (event.user_data.state.length === 64) {
-          userData.st = event.user_data.state;
-          console.log("🌍 State já hasheado (frontend):", (userData.st as string).substring(0, 16) + '...');
+        const stateValue = event.user_data.state.trim();
+        if (stateValue.length === 64 && /^[a-f0-9]{64}$/i.test(stateValue)) {
+          userData.st = stateValue;
+          console.log("🌍 State já hasheado (frontend):", stateValue.substring(0, 16) + '...');
         } else {
-          userData.st = hashSHA256(event.user_data.state.toLowerCase().trim());
+          userData.st = hashSHA256(stateValue.toLowerCase());
           console.log("🌍 State hasheado (fallback API):", (userData.st as string).substring(0, 16) + '...');
         }
       }
       if (typeof event.user_data?.city === "string" && event.user_data.city.trim()) {
-        if (event.user_data.city.length === 64) {
-          userData.ct = event.user_data.city;
-          console.log("🌍 City já hasheado (frontend):", (userData.ct as string).substring(0, 16) + '...');
+        const cityValue = event.user_data.city.trim();
+        if (cityValue.length === 64 && /^[a-f0-9]{64}$/i.test(cityValue)) {
+          userData.ct = cityValue;
+          console.log("🌍 City já hasheado (frontend):", cityValue.substring(0, 16) + '...');
         } else {
-          userData.ct = hashSHA256(event.user_data.city.toLowerCase().trim());
+          userData.ct = hashSHA256(cityValue.toLowerCase());
           console.log("🌍 City hasheado (fallback API):", (userData.ct as string).substring(0, 16) + '...');
         }
       }
       if (typeof event.user_data?.postal === "string" && event.user_data.postal.trim()) {
-        if (event.user_data.postal.length === 64) {
-          userData.zp = event.user_data.postal;
-          console.log("🌍 Postal Code já hasheado (frontend):", (userData.zp as string).substring(0, 16) + '...');
+        const postalValue = event.user_data.postal.trim();
+        if (postalValue.length === 64 && /^[a-f0-9]{64}$/i.test(postalValue)) {
+          userData.zp = postalValue;
+          console.log("🌍 Postal Code já hasheado (frontend):", postalValue.substring(0, 16) + '...');
         } else {
-          userData.zp = hashSHA256(event.user_data.postal.trim());
+          userData.zp = hashSHA256(postalValue);
           console.log("🌍 Postal Code hasheado (fallback API):", (userData.zp as string).substring(0, 16) + '...');
         }
       }
