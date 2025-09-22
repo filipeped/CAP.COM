@@ -109,7 +109,7 @@ const transformHotmartToMeta = (hotmartData: HotmartWebhookData, webhookPayload:
     action_source: "website",
     user_data: {
       em: buyer.email && isValidEmail(buyer.email) ? buyer.email.toLowerCase().trim() : undefined,
-      ph: buyer.phone && isValidPhone(buyer.phone) ? buyer.phone.replace(/\D/g, '') : undefined,
+      ph: buyer.checkout_phone && isValidPhone(buyer.checkout_phone) ? buyer.checkout_phone.replace(/\D/g, '') : undefined,
       fn: buyer.name && isValidString(buyer.name) ? buyer.name.toLowerCase().trim() : undefined,
       city: buyer.address?.city && isValidString(buyer.address.city) ? buyer.address.city.toLowerCase().trim() : undefined,
       state: buyer.address?.state && isValidString(buyer.address.state) ? buyer.address.state.toLowerCase().trim() : undefined,
