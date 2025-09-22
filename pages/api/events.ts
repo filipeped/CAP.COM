@@ -203,7 +203,10 @@ function isDuplicateEvent(eventId: string): boolean {
   return false;
 }
 
-// ✅ REMOVIDO: A função hashSHA256 foi removida. O frontend é o responsável pelo hashing.
+// ✅ REINTRODUZIDO: A função hashSHA256 é necessária como fallback para gerar event_id no servidor.
+function hashSHA256(input: string): string {
+  return crypto.createHash("sha256").update(input).digest("hex");
+}
 
 // ✅ IPv6 INTELIGENTE: Detecção e validação de IP com prioridade IPv6
 function getClientIP(
