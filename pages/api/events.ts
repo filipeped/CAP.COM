@@ -90,24 +90,31 @@ interface HotmartWebhookPayload {
   data: HotmartWebhookData;
 }
 
-const transformHotmartToMeta = (hotmartData: HotmartWebhookData): EventData => {
+const transformHotmartToMeta = (hotmartData: HotmartWebhookData, webhookPayload: HotmartWebhookPayload): EventData => {
   const { buyer, product, purchase, checkout_country } = hotmartData;
+
+  // ✅ VALIDAÇÃO: Verificar se dados essenciais estão presentes
+  const isValidEmail = (email: string) => email && email.includes('@') && email.length > 3;
+  const isValidPhone = (phone: string) => phone && phone.replace(/\D/g, '').length >= 8;
+  const isValidString = (str: string) => str && str.trim().length > 0;
 
   // Priorizar checkout_country.iso sobre buyer.address.country_iso conforme documentação oficial
   const countryCode = checkout_country?.iso || buyer.address?.country_iso;
 
+  // ✅ BACKEND SEM HASHING: Apenas repassa os dados já hasheados pelo sistema de origem (Hotmart)
+  // A Hotmart já envia dados sensíveis em conformidade ou o sistema de origem deve tratar o hash.
   return {
     event_name: "Purchase",
-    event_time: Math.floor(Date.now() / 1000),
+    event_time: Math.floor(webhookPayload.creation_date / 1000),
     action_source: "website",
     user_data: {
-      em: hashSHA256(buyer.email.toLowerCase().trim()),
-      ph: buyer.checkout_phone ? hashSHA256(buyer.checkout_phone.replace(/\D/g, "")) : undefined,
-      fn: buyer.name ? hashSHA256(buyer.name.toLowerCase().trim()) : undefined,
-      ct: buyer.address?.city ? hashSHA256(buyer.address.city.toLowerCase().trim()) : undefined,
-      st: buyer.address?.state ? hashSHA256(buyer.address.state.toLowerCase().trim()) : undefined,
-      zp: buyer.address?.zipcode ? hashSHA256(buyer.address.zipcode.toLowerCase()) : undefined,
-      country: countryCode ? hashSHA256(countryCode.toLowerCase()) : undefined,
+      em: buyer.email && isValidEmail(buyer.email) ? buyer.email.toLowerCase().trim() : undefined,
+      ph: buyer.phone && isValidPhone(buyer.phone) ? buyer.phone.replace(/\D/g, '') : undefined,
+      fn: buyer.name && isValidString(buyer.name) ? buyer.name.toLowerCase().trim() : undefined,
+      city: buyer.address?.city && isValidString(buyer.address.city) ? buyer.address.city.toLowerCase().trim() : undefined,
+      state: buyer.address?.state && isValidString(buyer.address.state) ? buyer.address.state.toLowerCase().trim() : undefined,
+      postal: buyer.address?.zipcode && isValidString(buyer.address.zipcode) ? buyer.address.zipcode.replace(/\D/g, '') : undefined,
+      country: countryCode && isValidString(countryCode) ? countryCode.toLowerCase() : undefined,
     },
     custom_data: {
       currency: purchase.price.currency_value,
@@ -196,14 +203,7 @@ function isDuplicateEvent(eventId: string): boolean {
   return false;
 }
 
-// ✅ MELHORADO: Hash SHA256 com fallback robusto
-function hashSHA256(value: string): string {
-  if (!value || typeof value !== "string") {
-    console.warn("⚠️ hashSHA256: Valor inválido, usando fallback:", value);
-    return crypto.createHash("sha256").update(`fallback_${Date.now()}_${Math.random()}`).digest("hex");
-  }
-  return crypto.createHash("sha256").update(value.trim()).digest("hex");
-}
+// ✅ REMOVIDO: A função hashSHA256 foi removida. O frontend é o responsável pelo hashing.
 
 // ✅ IPv6 INTELIGENTE: Detecção e validação de IP com prioridade IPv6
 function getClientIP(
@@ -472,7 +472,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       console.log("🔥 Webhook Hotmart detectado:", { event: req.body.event, id: req.body.id });
       
       if (req.body.event === "PURCHASE_APPROVED") {
-        const transformedEvent = transformHotmartToMeta(req.body.data);
+        const transformedEvent = transformHotmartToMeta(req.body.data, req.body);
         
         // Verificar duplicata
         if (isDuplicateEvent(transformedEvent.event_id!)) {
