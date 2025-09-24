@@ -101,20 +101,20 @@ const transformHotmartToMeta = (hotmartData: HotmartWebhookData, webhookPayload:
   // Priorizar checkout_country.iso sobre buyer.address.country_iso conforme documentação oficial
   const countryCode = checkout_country?.iso || buyer.address?.country_iso;
 
-  // ✅ BACKEND SEM HASHING: Apenas repassa os dados já hasheados pelo sistema de origem (Hotmart)
-  // A Hotmart já envia dados sensíveis em conformidade ou o sistema de origem deve tratar o hash.
+  // ✅ CORREÇÃO CRÍTICA: Aplicar hash SHA256 aos dados PII do webhook Hotmart
+  // Meta exige que dados PII sejam hasheados antes do envio via CAPI
   return {
     event_name: "Purchase",
     event_time: Math.floor(webhookPayload.creation_date / 1000),
     action_source: "website",
     user_data: {
-      em: buyer.email && isValidEmail(buyer.email) ? buyer.email.toLowerCase().trim() : undefined,
-      ph: buyer.checkout_phone && isValidPhone(buyer.checkout_phone) ? buyer.checkout_phone.replace(/\D/g, '') : undefined,
-      fn: buyer.name && isValidString(buyer.name) ? buyer.name.toLowerCase().trim() : undefined,
-      city: buyer.address?.city && isValidString(buyer.address.city) ? buyer.address.city.toLowerCase().trim() : undefined,
-      state: buyer.address?.state && isValidString(buyer.address.state) ? buyer.address.state.toLowerCase().trim() : undefined,
-      postal: buyer.address?.zipcode && isValidString(buyer.address.zipcode) ? buyer.address.zipcode.replace(/\D/g, '') : undefined,
-      country: countryCode && isValidString(countryCode) ? countryCode.toLowerCase() : undefined,
+      em: buyer.email && isValidEmail(buyer.email) ? hashSHA256(buyer.email.toLowerCase().trim()) : undefined,
+      ph: buyer.checkout_phone && isValidPhone(buyer.checkout_phone) ? hashSHA256(buyer.checkout_phone.replace(/\D/g, '')) : undefined,
+      fn: buyer.name && isValidString(buyer.name) ? hashSHA256(buyer.name.toLowerCase().trim()) : undefined,
+      city: buyer.address?.city && isValidString(buyer.address.city) ? hashSHA256(buyer.address.city.toLowerCase().trim()) : undefined,
+      state: buyer.address?.state && isValidString(buyer.address.state) ? hashSHA256(buyer.address.state.toLowerCase().trim()) : undefined,
+      postal: buyer.address?.zipcode && isValidString(buyer.address.zipcode) ? hashSHA256(buyer.address.zipcode.replace(/\D/g, '')) : undefined,
+      country: countryCode && isValidString(countryCode) ? hashSHA256(countryCode.toLowerCase()) : undefined,
     },
     custom_data: {
       currency: purchase.price.currency_value,
