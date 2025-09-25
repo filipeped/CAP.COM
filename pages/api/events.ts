@@ -91,9 +91,7 @@ interface HotmartWebhookPayload {
 const transformHotmartToMeta = (hotmartData: HotmartWebhookData, webhookPayload: HotmartWebhookPayload): EventData => {
   const { buyer, product, purchase, checkout_country } = hotmartData;
 
-  // ✅ VALIDAÇÃO: Verificar se dados essenciais estão presentes
-  const isValidEmail = (email: string) => email && email.includes('@') && email.length > 3;
-  const isValidPhone = (phone: string) => phone && phone.replace(/\D/g, '').length >= 8;
+  // ✅ VALIDAÇÃO: Verificar se dados geográficos estão presentes
   const isValidString = (str: string) => str && str.trim().length > 0;
 
   // Priorizar checkout_country.iso sobre buyer.address.country_iso conforme documentação oficial
