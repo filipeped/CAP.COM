@@ -28,9 +28,7 @@ interface UserData {
   st?: string;  // ✅ CORRETO: Meta CAPI usa 'st' para state  
   zp?: string;  // ✅ CORRETO: Meta CAPI usa 'zp' para postal
   country?: string;  // ✅ ADICIONADO: Campo country usado no código (linhas 663-672)
-  em?: string;  // ✅ ADICIONADO: Campo email (hashed)
-  ph?: string;  // ✅ ADICIONADO: Campo phone (hashed)
-  fn?: string;  // ✅ ADICIONADO: Campo first name (hashed)
+  // ❌ REMOVIDO: Campos de dados pessoais (em, ph, fn) para eliminar vazamento de PII
   [key: string]: unknown;
 }
 
@@ -101,17 +99,15 @@ const transformHotmartToMeta = (hotmartData: HotmartWebhookData, webhookPayload:
   // Priorizar checkout_country.iso sobre buyer.address.country_iso conforme documentação oficial
   const countryCode = checkout_country?.iso || buyer.address?.country_iso;
 
-  // ✅ CORREÇÃO CRÍTICA: Aplicar hash SHA256 aos dados PII do webhook Hotmart
-  // Meta exige que dados PII sejam hasheados antes do envio via CAPI
+  // ✅ CORREÇÃO CRÍTICA: Aplicar hash SHA256 aos dados geográficos apenas (SEM PII)
+  // Meta CAPI permite dados geográficos hasheados, mas PII deve ser evitado
   return {
     event_name: "Purchase",
     event_time: Math.floor(webhookPayload.creation_date / 1000),
     action_source: "website",
     user_data: {
-      em: buyer.email && isValidEmail(buyer.email) ? hashSHA256(buyer.email.toLowerCase().trim()) : undefined,
-      ph: buyer.checkout_phone && isValidPhone(buyer.checkout_phone) ? hashSHA256(buyer.checkout_phone.replace(/\D/g, '')) : undefined,
-      fn: buyer.name && isValidString(buyer.name) ? hashSHA256(buyer.name.toLowerCase().trim()) : undefined,
-      // ✅ CORREÇÃO CRÍTICA: Usar campos corretos do Meta CAPI
+      // ❌ REMOVIDO: Dados pessoais (email, phone, name) para eliminar vazamento de PII
+      // ✅ MANTIDO: Apenas dados geográficos hasheados (permitidos pelo Meta CAPI)
       ct: buyer.address?.city && isValidString(buyer.address.city) ? hashSHA256(buyer.address.city.toLowerCase().trim()) : undefined,
       st: buyer.address?.state && isValidString(buyer.address.state) ? hashSHA256(buyer.address.state.toLowerCase().trim()) : undefined,
       zp: buyer.address?.zipcode && isValidString(buyer.address.zipcode) ? hashSHA256(buyer.address.zipcode.replace(/\D/g, '')) : undefined,
@@ -513,7 +509,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
         console.log("📤 Enviando evento Hotmart para Meta CAPI:", {
           event_id: transformedEvent.event_id,
-          buyer_email_hash: req.body.data.buyer.email ? hashSHA256(req.body.data.buyer.email.toLowerCase().trim()) : "N/A",
+          // ❌ REMOVIDO: buyer_email_hash para eliminar vazamento de PII
           transaction: req.body.data.purchase.transaction,
           value: req.body.data.purchase.price.value,
           currency: req.body.data.purchase.price.currency_value,
