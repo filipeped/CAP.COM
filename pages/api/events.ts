@@ -24,13 +24,13 @@ interface UserData {
   external_id?: string;
   fbp?: string;
   fbc?: string;
-  country?: string;
-  state?: string;
-  city?: string;
-  postal?: string;
-  st?: string;
-  ct?: string;
-  zp?: string;
+  ct?: string;  // ✅ CORRETO: Meta CAPI usa 'ct' para city
+  st?: string;  // ✅ CORRETO: Meta CAPI usa 'st' para state  
+  zp?: string;  // ✅ CORRETO: Meta CAPI usa 'zp' para postal
+  country?: string;  // ✅ ADICIONADO: Campo country usado no código (linhas 663-672)
+  em?: string;  // ✅ ADICIONADO: Campo email (hashed)
+  ph?: string;  // ✅ ADICIONADO: Campo phone (hashed)
+  fn?: string;  // ✅ ADICIONADO: Campo first name (hashed)
   [key: string]: unknown;
 }
 
@@ -111,10 +111,12 @@ const transformHotmartToMeta = (hotmartData: HotmartWebhookData, webhookPayload:
       em: buyer.email && isValidEmail(buyer.email) ? hashSHA256(buyer.email.toLowerCase().trim()) : undefined,
       ph: buyer.checkout_phone && isValidPhone(buyer.checkout_phone) ? hashSHA256(buyer.checkout_phone.replace(/\D/g, '')) : undefined,
       fn: buyer.name && isValidString(buyer.name) ? hashSHA256(buyer.name.toLowerCase().trim()) : undefined,
-      city: buyer.address?.city && isValidString(buyer.address.city) ? hashSHA256(buyer.address.city.toLowerCase().trim()) : undefined,
-      state: buyer.address?.state && isValidString(buyer.address.state) ? hashSHA256(buyer.address.state.toLowerCase().trim()) : undefined,
-      postal: buyer.address?.zipcode && isValidString(buyer.address.zipcode) ? hashSHA256(buyer.address.zipcode.replace(/\D/g, '')) : undefined,
-      country: countryCode && isValidString(countryCode) ? hashSHA256(countryCode.toLowerCase()) : undefined,
+      // ✅ CORREÇÃO CRÍTICA: Usar campos corretos do Meta CAPI
+      ct: buyer.address?.city && isValidString(buyer.address.city) ? hashSHA256(buyer.address.city.toLowerCase().trim()) : undefined,
+      st: buyer.address?.state && isValidString(buyer.address.state) ? hashSHA256(buyer.address.state.toLowerCase().trim()) : undefined,
+      zp: buyer.address?.zipcode && isValidString(buyer.address.zipcode) ? hashSHA256(buyer.address.zipcode.replace(/\D/g, '')) : undefined,
+      // ✅ CORREÇÃO CRÍTICA: Usar countryCode calculado (linha 98) no user_data
+      country: countryCode && isValidString(countryCode) ? hashSHA256(countryCode.toLowerCase().trim()) : undefined,
     },
     custom_data: {
       currency: purchase.price.currency_value,
@@ -370,35 +372,42 @@ function processFbc(fbc: string): string | null {
     return trimmedFbc; // ✅ PRESERVA valor original sem modificações
   }
 
-  // ✅ CORREÇÃO CRÍTICA: Aceitar QUALQUER fbclid válido conforme Meta
-  // Meta documentação oficial: "ClickID value is case sensitive - do not apply any modifications"
-  // Aceita qualquer formato de fbclid que a Meta gera (múltiplos prefixos possíveis)
+  // ✅ CORREÇÃO CRÍTICA: Envelope fbclid no formato Meta oficial
+  // Meta documentação oficial: fb.1.timestamp.fbclid_value
   const fbclidPattern = /^[A-Za-z0-9_-]{15,}$/; // Flexível: mínimo 15 chars, qualquer prefixo válido
   
   // Se é um fbclid puro (sem prefixo fbclid=)
   if (fbclidPattern.test(trimmedFbc)) {
-    // ✅ CORREÇÃO CRÍTICA: PRESERVAR fbclid original conforme Meta
-    // NUNCA modificar o valor ou criar timestamps artificiais
-    console.log("✅ fbclid válido - preservando valor original:", trimmedFbc);
-    return trimmedFbc; // ✅ PRESERVA fbclid original SEM formatação
+    // ✅ CORREÇÃO CRÍTICA: Envelope no formato Meta oficial
+    const timestamp = Date.now(); // Timestamp atual em milliseconds
+    const envelopedFbc = `fb.1.${timestamp}.${trimmedFbc}`;
+    console.log("✅ fbclid envelopado no formato Meta:", envelopedFbc);
+    return envelopedFbc;
   }
 
   // Se tem prefixo fbclid=
   if (trimmedFbc.startsWith("fbclid=")) {
     const fbclid = trimmedFbc.substring(7);
     if (fbclidPattern.test(fbclid)) {
-      // ✅ CORREÇÃO CRÍTICA: PRESERVAR fbclid original conforme Meta
-      // Apenas remover prefixo fbclid= se presente, mas NUNCA modificar o valor
-      console.log("✅ fbclid válido - preservando valor original:", fbclid);
-      return fbclid; // ✅ PRESERVA fbclid original SEM formatação
+      // ✅ CORREÇÃO CRÍTICA: Envelope no formato Meta oficial
+      const timestamp = Date.now(); // Timestamp atual em milliseconds
+      const envelopedFbc = `fb.1.${timestamp}.${fbclid}`;
+      console.log("✅ fbclid envelopado no formato Meta:", envelopedFbc);
+      return envelopedFbc;
     }
   }
 
-  // ✅ CRÍTICO: NUNCA rejeitar valores que podem ser válidos
+  // ✅ CRÍTICO: Para formatos não reconhecidos, tentar envelope se parecer com fbclid
   // Meta documentação: "do not apply any modifications before using"
-  // Se chegou aqui, pode ser um formato que não reconhecemos mas é válido
-  console.log("✅ FBC formato não reconhecido - preservando valor original:", trimmedFbc);
-  return trimmedFbc; // ✅ SEMPRE preserva valor original conforme Meta
+  if (trimmedFbc.length >= 15 && /^[A-Za-z0-9_-]+$/.test(trimmedFbc)) {
+    const timestamp = Date.now();
+    const envelopedFbc = `fb.1.${timestamp}.${trimmedFbc}`;
+    console.log("✅ FBC formato não reconhecido - envelopando:", envelopedFbc);
+    return envelopedFbc;
+  }
+
+  console.warn("⚠️ FBC inválido - não foi possível processar:", trimmedFbc);
+  return null;
 }
 
 const RATE_LIMIT = 100; // Aumentado para suportar picos de tráfego
@@ -504,7 +513,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
         console.log("📤 Enviando evento Hotmart para Meta CAPI:", {
           event_id: transformedEvent.event_id,
-          buyer_email: req.body.data.buyer.email,
+          buyer_email_hash: req.body.data.buyer.email ? hashSHA256(req.body.data.buyer.email.toLowerCase().trim()) : "N/A",
           transaction: req.body.data.purchase.transaction,
           value: req.body.data.purchase.price.value,
           currency: req.body.data.purchase.price.currency_value,
@@ -676,8 +685,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           console.log("🌍 Country hasheado (fallback API):", (userData.country as string).substring(0, 16) + '...');
         }
       }
-      if (typeof event.user_data?.state === "string" && event.user_data.state.trim()) {
-        const stateValue = event.user_data.state.trim();
+      if (typeof event.user_data?.st === "string" && event.user_data.st.trim()) {
+        const stateValue = event.user_data.st.trim();
         if (stateValue.length === 64 && /^[a-f0-9]{64}$/i.test(stateValue)) {
           userData.st = stateValue;
           console.log("🌍 State já hasheado (frontend):", stateValue.substring(0, 16) + '...');
@@ -686,8 +695,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           console.log("🌍 State hasheado (fallback API):", (userData.st as string).substring(0, 16) + '...');
         }
       }
-      if (typeof event.user_data?.city === "string" && event.user_data.city.trim()) {
-        const cityValue = event.user_data.city.trim();
+      if (typeof event.user_data?.ct === "string" && event.user_data.ct.trim()) {
+        const cityValue = event.user_data.ct.trim();
         if (cityValue.length === 64 && /^[a-f0-9]{64}$/i.test(cityValue)) {
           userData.ct = cityValue;
           console.log("🌍 City já hasheado (frontend):", cityValue.substring(0, 16) + '...');
@@ -696,8 +705,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           console.log("🌍 City hasheado (fallback API):", (userData.ct as string).substring(0, 16) + '...');
         }
       }
-      if (typeof event.user_data?.postal === "string" && event.user_data.postal.trim()) {
-        const postalValue = event.user_data.postal.trim();
+      if (typeof event.user_data?.zp === "string" && event.user_data.zp.trim()) {
+        const postalValue = event.user_data.zp.trim();
         if (postalValue.length === 64 && /^[a-f0-9]{64}$/i.test(postalValue)) {
           userData.zp = postalValue;
           console.log("🌍 Postal Code já hasheado (frontend):", postalValue.substring(0, 16) + '...');
@@ -748,10 +757,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       external_ids_from_frontend: enrichedData.filter(
         (e) => e.user_data.external_id && typeof e.user_data.external_id === 'string' && e.user_data.external_id.length === 64
       ).length,
-      has_geo_data: enrichedData.some((e) => e.user_data.country || e.user_data.state || e.user_data.city),
+      has_geo_data: enrichedData.some((e) => e.user_data.ct || e.user_data.st || e.user_data.zp),
       geo_locations: enrichedData
-        .filter((e) => e.user_data.country)
-        .map((e) => `${e.user_data.country}/${e.user_data.state}/${e.user_data.city}`)
+        .filter((e) => e.user_data.ct)
+        .map((e) => `${e.user_data.ct}/${e.user_data.st}/${e.user_data.zp}`)
         .slice(0, 3),
       fbc_processed: enrichedData.filter((e) => e.user_data.fbc).length,
       cache_size: eventCache.size,
