@@ -94,10 +94,10 @@ const transformHotmartToMeta = (hotmartData: HotmartWebhookData, webhookPayload:
   // ✅ VALIDAÇÃO: Verificar se dados geográficos estão presentes
   const isValidString = (str: string) => str && str.trim().length > 0;
 
-  // ✅ CORREÇÃO: Lógica unificada para country - priorizar name, fallback para iso
-  const countryName = checkout_country?.name;
+  // ✅ CORREÇÃO: Lógica unificada para country - priorizar iso (ISO 3166-1 alpha-2), fallback para name
   const countryCode = checkout_country?.iso || buyer.address?.country_iso;
-  const countryValue = countryName || countryCode;
+  const countryName = checkout_country?.name;
+  const countryValue = countryCode || countryName;
 
   // ✅ CORREÇÃO CRÍTICA: Aplicar hash SHA256 aos dados geográficos apenas (SEM PII)
   // Meta CAPI permite dados geográficos hasheados, mas PII deve ser evitado
