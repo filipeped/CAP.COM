@@ -94,8 +94,8 @@ const transformHotmartToMeta = (hotmartData: HotmartWebhookData, webhookPayload:
   // ✅ VALIDAÇÃO: Verificar se dados geográficos estão presentes
   const isValidString = (str: string) => str && str.trim().length > 0;
 
-  // Priorizar checkout_country.iso sobre buyer.address.country_iso conforme documentação oficial
-  const countryCode = checkout_country?.iso || buyer.address?.country_iso;
+  // Priorizar checkout_country.name sobre checkout_country.iso para consistência com outros campos
+  const countryName = checkout_country?.name || checkout_country?.iso || buyer.address?.country_iso;
 
   // ✅ CORREÇÃO CRÍTICA: Aplicar hash SHA256 aos dados geográficos apenas (SEM PII)
   // Meta CAPI permite dados geográficos hasheados, mas PII deve ser evitado
@@ -109,8 +109,8 @@ const transformHotmartToMeta = (hotmartData: HotmartWebhookData, webhookPayload:
       ct: buyer.address?.city && isValidString(buyer.address.city) ? hashSHA256(buyer.address.city.toLowerCase().trim()) : undefined,
       st: buyer.address?.state && isValidString(buyer.address.state) ? hashSHA256(buyer.address.state.toLowerCase().trim()) : undefined,
       zp: buyer.address?.zipcode && isValidString(buyer.address.zipcode) ? hashSHA256(buyer.address.zipcode.replace(/\D/g, '')) : undefined,
-      // ✅ CORREÇÃO CRÍTICA: Usar countryCode calculado (linha 98) no user_data
-      country: countryCode && isValidString(countryCode) ? hashSHA256(countryCode.toLowerCase().trim()) : undefined,
+      // ✅ CORREÇÃO CRÍTICA: Usar countryName calculado (linha 98) no user_data
+      country: countryName && isValidString(countryName) ? hashSHA256(countryName.toLowerCase().trim()) : undefined,
     },
     custom_data: {
       currency: purchase.price.currency_value,
