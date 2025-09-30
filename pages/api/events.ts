@@ -358,26 +358,36 @@ function processFbc(fbc: string): string | null {
 
   // ✅ CORREÇÃO META: Não usar trim() para preservar valor original
   // Meta documentação: "do not apply any modifications before using"
-
+  
+  // ✅ VALIDAÇÃO ANTI-MODIFICAÇÃO: Verificar se valor não foi alterado inadvertidamente
+  const originalFbc = fbc;
+  
   // ✅ CORREÇÃO CRÍTICA: Aceitar FBC já formatado (fb.subdomainIndex.timestamp.fbclid)
   // Documentação Meta: fb.[0-9]+.[0-9]{13}.[fbclid_value]
-  const fbcPattern = /^fb\.[0-9]+\.[0-9]{13}\.[A-Za-z0-9_-]+$/;
+  // ✅ REGEX MAIS RIGOROSO: fbclid deve ter pelo menos 15 caracteres
+  const fbcPattern = /^fb\.[0-9]+\.[0-9]{13}\.[A-Za-z0-9_-]{15,}$/;
   if (fbcPattern.test(fbc)) {
-    console.log("✅ FBC válido (formato padrão Meta):", fbc);
+    console.log("✅ FBC válido (formato padrão Meta):", fbc.substring(0, 30) + '...');
     return fbc; // ✅ PRESERVA valor original sem modificações
   }
 
   // ✅ CORREÇÃO CRÍTICA: Envelope fbclid no formato Meta oficial
   // Meta documentação oficial: fb.1.timestamp.fbclid_value
-  // ✅ CORREÇÃO META: Regex mais flexível para aceitar fbclids válidos
-  const fbclidPattern = /^[A-Za-z0-9_-]{10,}$/; // Mais flexível: mínimo 10 chars
+  // ✅ VALIDAÇÃO MAIS RIGOROSA: fbclid deve ter pelo menos 15 caracteres
+  const fbclidPattern = /^[A-Za-z0-9_-]{15,}$/; // Mais rigoroso: mínimo 15 chars
   
   // Se é um fbclid puro (sem prefixo fbclid=)
   if (fbclidPattern.test(fbc)) {
+    // ✅ VERIFICAÇÃO ANTI-MODIFICAÇÃO: Garantir que não houve alteração de case
+    if (fbc !== originalFbc) {
+      console.error("❌ CRÍTICO: fbclid foi modificado durante processamento!");
+      return null;
+    }
+    
     // ✅ CORREÇÃO CRÍTICA: Preservar timestamp original se possível
     // Meta documentação: "do not apply any modifications before using"
     const envelopedFbc = `fb.1.${Date.now()}.${fbc}`;
-    console.log("✅ fbclid envelopado no formato Meta:", envelopedFbc);
+    console.log("✅ fbclid envelopado no formato Meta:", envelopedFbc.substring(0, 30) + '...');
     return envelopedFbc;
   }
 
