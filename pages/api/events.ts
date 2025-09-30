@@ -106,11 +106,11 @@ const transformHotmartToMeta = (hotmartData: HotmartWebhookData, webhookPayload:
     user_data: {
       // ❌ REMOVIDO: Dados pessoais (email, phone, name) para eliminar vazamento de PII
       // ✅ MANTIDO: Apenas dados geográficos hasheados (permitidos pelo Meta CAPI)
-      ct: buyer.address?.city && isValidString(buyer.address.city) ? hashSHA256(buyer.address.city.toLowerCase().trim()) : undefined,
-      st: buyer.address?.state && isValidString(buyer.address.state) ? hashSHA256(buyer.address.state.toLowerCase().trim()) : undefined,
-      zp: buyer.address?.zipcode && isValidString(buyer.address.zipcode) ? hashSHA256(buyer.address.zipcode.replace(/\D/g, '')) : undefined,
+      ct: buyer.address?.city && isValidString(buyer.address.city) ? hashSHA256(buyer.address.city) : undefined,
+      st: buyer.address?.state && isValidString(buyer.address.state) ? hashSHA256(buyer.address.state) : undefined,
+      zp: buyer.address?.zipcode && isValidString(buyer.address.zipcode) ? hashSHA256(buyer.address.zipcode) : undefined,
       // ✅ CORREÇÃO CRÍTICA: Usar countryName calculado (linha 98) no user_data
-      country: countryName && isValidString(countryName) ? hashSHA256(countryName.toLowerCase().trim()) : undefined,
+      country: countryName && isValidString(countryName) ? hashSHA256(countryName) : undefined,
     },
     custom_data: {
       currency: purchase.price.currency_value,
@@ -356,51 +356,48 @@ function processFbc(fbc: string): string | null {
     return null;
   }
 
-  const trimmedFbc = fbc.trim();
+  // ✅ CORREÇÃO META: Não usar trim() para preservar valor original
+  // Meta documentação: "do not apply any modifications before using"
 
   // ✅ CORREÇÃO CRÍTICA: Aceitar FBC já formatado (fb.subdomainIndex.timestamp.fbclid)
   // Documentação Meta: fb.[0-9]+.[0-9]{13}.[fbclid_value]
   const fbcPattern = /^fb\.[0-9]+\.[0-9]{13}\.[A-Za-z0-9_-]+$/;
-  if (fbcPattern.test(trimmedFbc)) {
-    console.log("✅ FBC válido (formato padrão Meta):", trimmedFbc);
-    return trimmedFbc; // ✅ PRESERVA valor original sem modificações
+  if (fbcPattern.test(fbc)) {
+    console.log("✅ FBC válido (formato padrão Meta):", fbc);
+    return fbc; // ✅ PRESERVA valor original sem modificações
   }
 
   // ✅ CORREÇÃO CRÍTICA: Envelope fbclid no formato Meta oficial
   // Meta documentação oficial: fb.1.timestamp.fbclid_value
-  const fbclidPattern = /^[A-Za-z0-9_-]{15,}$/; // Flexível: mínimo 15 chars, qualquer prefixo válido
+  // ✅ CORREÇÃO META: Regex mais flexível para aceitar fbclids válidos
+  const fbclidPattern = /^[A-Za-z0-9_-]{10,}$/; // Mais flexível: mínimo 10 chars
   
   // Se é um fbclid puro (sem prefixo fbclid=)
-  if (fbclidPattern.test(trimmedFbc)) {
-    // ✅ CORREÇÃO CRÍTICA: Envelope no formato Meta oficial
-    const timestamp = Date.now(); // Timestamp atual em milliseconds
-    const envelopedFbc = `fb.1.${timestamp}.${trimmedFbc}`;
+  if (fbclidPattern.test(fbc)) {
+    // ✅ CORREÇÃO CRÍTICA: Preservar timestamp original se possível
+    // Meta documentação: "do not apply any modifications before using"
+    const envelopedFbc = `fb.1.${Date.now()}.${fbc}`;
     console.log("✅ fbclid envelopado no formato Meta:", envelopedFbc);
     return envelopedFbc;
   }
 
-  // Se tem prefixo fbclid=
-  if (trimmedFbc.startsWith("fbclid=")) {
-    const fbclid = trimmedFbc.substring(7);
-    if (fbclidPattern.test(fbclid)) {
-      // ✅ CORREÇÃO CRÍTICA: Envelope no formato Meta oficial
-      const timestamp = Date.now(); // Timestamp atual em milliseconds
-      const envelopedFbc = `fb.1.${timestamp}.${fbclid}`;
-      console.log("✅ fbclid envelopado no formato Meta:", envelopedFbc);
-      return envelopedFbc;
-    }
+  // ✅ CORREÇÃO CRÍTICA META: Se tem prefixo fbclid=, preservar valor COMPLETO
+  if (fbc.startsWith("fbclid=")) {
+    // ✅ CRÍTICO: NÃO remover prefixo - Meta pode precisar do contexto completo
+    // Meta documentação: "do not apply any modifications before using"
+    console.log("✅ FBC com prefixo fbclid= preservado integralmente:", fbc);
+    return fbc; // ✅ PRESERVA valor COMPLETO sem modificações
   }
 
   // ✅ CRÍTICO: Para formatos não reconhecidos, tentar envelope se parecer com fbclid
   // Meta documentação: "do not apply any modifications before using"
-  if (trimmedFbc.length >= 15 && /^[A-Za-z0-9_-]+$/.test(trimmedFbc)) {
-    const timestamp = Date.now();
-    const envelopedFbc = `fb.1.${timestamp}.${trimmedFbc}`;
+  if (fbc.length >= 10 && /^[A-Za-z0-9_-]+$/.test(fbc)) {
+    const envelopedFbc = `fb.1.${Date.now()}.${fbc}`;
     console.log("✅ FBC formato não reconhecido - envelopando:", envelopedFbc);
     return envelopedFbc;
   }
 
-  console.warn("⚠️ FBC inválido - não foi possível processar:", trimmedFbc);
+  console.warn("⚠️ FBC inválido - não foi possível processar:", fbc);
   return null;
 }
 
@@ -674,8 +671,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           userData.country = countryValue;
           console.log("🌍 Country já hasheado (frontend):", countryValue.substring(0, 16) + '...');
         } else {
-          // Fallback: aplicar hash se não estiver hasheado
-          userData.country = hashSHA256(countryValue.toLowerCase());
+          // Fallback: aplicar hash se não estiver hasheado (sem modificar case)
+          userData.country = hashSHA256(countryValue);
           console.log("🌍 Country hasheado (fallback API):", (userData.country as string).substring(0, 16) + '...');
         }
       }
@@ -685,7 +682,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           userData.st = stateValue;
           console.log("🌍 State já hasheado (frontend):", stateValue.substring(0, 16) + '...');
         } else {
-          userData.st = hashSHA256(stateValue.toLowerCase());
+          userData.st = hashSHA256(stateValue);
           console.log("🌍 State hasheado (fallback API):", (userData.st as string).substring(0, 16) + '...');
         }
       }
@@ -695,7 +692,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           userData.ct = cityValue;
           console.log("🌍 City já hasheado (frontend):", cityValue.substring(0, 16) + '...');
         } else {
-          userData.ct = hashSHA256(cityValue.toLowerCase());
+          userData.ct = hashSHA256(cityValue);
           console.log("🌍 City hasheado (fallback API):", (userData.ct as string).substring(0, 16) + '...');
         }
       }
@@ -705,7 +702,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
           userData.zp = postalValue;
           console.log("🌍 Postal Code já hasheado (frontend):", postalValue.substring(0, 16) + '...');
         } else {
-          userData.zp = hashSHA256(postalValue.toLowerCase());
+          userData.zp = hashSHA256(postalValue);
           console.log("🌍 Postal Code hasheado (fallback API):", (userData.zp as string).substring(0, 16) + '...');
         }
       }
